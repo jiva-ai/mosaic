@@ -1,1 +1,1 @@
-# mosiac
+# mosaic
