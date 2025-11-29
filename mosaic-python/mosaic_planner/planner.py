@@ -1,9 +1,15 @@
 """Utility functions for planning data and ML workload distribution."""
 
+import gzip
 import os
+import pickle
 import time
+import zipfile
+from io import BytesIO
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Union
+
+import numpy as np
 
 from mosaic_planner.state import Data, DataType, FileDefinition, Model, Plan, Project
 
@@ -1463,4 +1469,358 @@ def plan_data_distribution(
     )
     
     return plan
+
+
+def get_directory_size(directory: Union[str, Path]) -> int:
+    """
+    Get total size of a directory with error handling for permission issues.
+    
+    Recursively traverses the directory and sums up the size of all files.
+    Skips files that cannot be accessed due to permission errors.
+    
+    Args:
+        directory: Path to the directory (string or Path object)
+    
+    Returns:
+        Total size in bytes of all files in the directory
+    """
+    total = 0
+    dir_path = Path(directory)
+    
+    if not dir_path.exists() or not dir_path.is_dir():
+        return 0
+    
+    for f in dir_path.rglob('*'):
+        try:
+            if f.is_file():
+                total += f.stat().st_size
+        except (OSError, PermissionError):
+            # Skip files we can't access
+            pass
+    
+    return total
+
+
+def serialize_plan_with_data(plan: Plan, data: Data, compress: bool = True) -> bytes:
+    """
+    Serialize a Plan object and its associated Data with compression.
+    
+    Args:
+        plan: Plan object to serialize
+        data: Data object to serialize
+        compress: Whether to compress the data (default: True)
+    
+    Returns:
+        Pickled and optionally compressed bytes
+    """
+    # Create a dictionary with plan and data
+    serializable_data = {
+        "plan": plan,
+        "data": data,
+    }
+    
+    # Pickle the data
+    pickled_data = pickle.dumps(serializable_data)
+    
+    # Compress if requested
+    if compress:
+        return gzip.compress(pickled_data)
+    else:
+        return pickled_data
+
+
+def deserialize_plan_with_data(data_bytes: bytes, compressed: bool = True) -> tuple[Plan, Data]:
+    """
+    Deserialize a Plan object and its associated Data from bytes.
+    
+    Args:
+        data_bytes: Serialized bytes (pickled, optionally compressed)
+        compressed: Whether the data is compressed (default: True)
+    
+    Returns:
+        Tuple of (Plan, Data)
+    """
+    # Decompress if needed
+    if compressed:
+        pickled_data = gzip.decompress(data_bytes)
+    else:
+        pickled_data = data_bytes
+    
+    # Unpickle
+    deserialized = pickle.loads(pickled_data)
+    
+    return deserialized["plan"], deserialized["data"]
+
+
+def prepare_file_data_for_transmission(
+    file_def: FileDefinition,
+    segment_info: Dict[str, Any],
+    data_folder: str,
+    compress: Optional[bool] = None,
+) -> bytes:
+    """
+    Prepare file data for transmission by reading and optionally compressing it.
+    
+    Uses intelligent compression defaults based on data type:
+    - Text, CSV: Highly compressible, use compression
+    - Images, Audio: Generally not compressible, skip compression
+    - Graph, RL: Moderate compression
+    - Dir: Always zip (for directory structure)
+    
+    Args:
+        file_def: FileDefinition with location and data type
+        segment_info: Segment information from data_segmentation_plan
+        data_folder: Base data folder path
+        compress: Whether to compress. If None, uses intelligent defaults based on data type
+    
+    Returns:
+        Bytes ready for transmission (optionally compressed/zipped)
+    """
+    full_path = Path(data_folder) / file_def.location
+    
+    # Determine compression based on data type if not specified
+    if compress is None:
+        if file_def.data_type in [DataType.TEXT, DataType.CSV]:
+            compress = True  # Highly compressible
+        elif file_def.data_type in [DataType.IMAGE, DataType.AUDIO]:
+            compress = False  # Generally not compressible
+        else:
+            compress = True  # Default to compression for others
+    
+    # Handle non-segmentable files - send entire file/directory
+    if not file_def.is_segmentable:
+        if full_path.is_file():
+            # Single file - read and optionally compress
+            with open(full_path, 'rb') as f:
+                file_data = f.read()
+            
+            if compress:
+                return gzip.compress(file_data)
+            else:
+                return file_data
+        elif full_path.is_dir():
+            # Directory - always zip for transmission
+            zip_buffer = BytesIO()
+            with zipfile.ZipFile(zip_buffer, 'w', zipfile.ZIP_DEFLATED) as zip_file:
+                for file_path in full_path.rglob('*'):
+                    if file_path.is_file():
+                        arcname = file_path.relative_to(full_path)
+                        zip_file.write(file_path, arcname)
+            return zip_buffer.getvalue()
+        else:
+            raise ValueError(f"Path does not exist: {full_path}")
+    
+    # Handle segmentable files based on data type
+    if file_def.data_type == DataType.CSV:
+        return _prepare_csv_segment(full_path, segment_info, compress)
+    elif file_def.data_type == DataType.IMAGE:
+        return _prepare_image_segment(full_path, segment_info, compress)
+    elif file_def.data_type == DataType.AUDIO:
+        return _prepare_audio_segment(full_path, segment_info, compress)
+    elif file_def.data_type == DataType.TEXT:
+        return _prepare_text_segment(full_path, segment_info, compress)
+    elif file_def.data_type == DataType.GRAPH:
+        return _prepare_graph_segment(full_path, segment_info, compress)
+    elif file_def.data_type == DataType.RL:
+        return _prepare_rl_segment(full_path, segment_info, compress)
+    elif file_def.data_type == DataType.DIR:
+        # Directory - always zip
+        return _prepare_dir_segment(full_path, segment_info)
+    else:
+        raise ValueError(f"Unknown data type: {file_def.data_type}")
+
+
+def _prepare_csv_segment(file_path: Path, segment_info: Dict[str, Any], compress: bool) -> bytes:
+    """Prepare CSV segment for transmission."""
+    import csv
+    
+    start_row = segment_info.get("start_row", 0)
+    end_row = segment_info.get("end_row", 0)
+    
+    # Read CSV and extract segment
+    rows = []
+    with open(file_path, 'r', newline='', encoding='utf-8') as f:
+        reader = csv.reader(f)
+        header = next(reader)  # Read header
+        rows.append(header)
+        
+        for i, row in enumerate(reader):
+            if start_row <= i < end_row:
+                rows.append(row)
+    
+    # Convert to CSV string
+    output = BytesIO()
+    writer = csv.writer(output)
+    writer.writerows(rows)
+    csv_data = output.getvalue()
+    
+    if compress:
+        return gzip.compress(csv_data)
+    return csv_data
+
+
+def _prepare_image_segment(file_path: Path, segment_info: Dict[str, Any], compress: bool) -> bytes:
+    """Prepare image segment for transmission (always zip for multiple images)."""
+    image_indices = segment_info.get("image_indices", [])
+    
+    if file_path.is_file():
+        # Single image file
+        with open(file_path, 'rb') as f:
+            data = f.read()
+        return gzip.compress(data) if compress else data
+    elif file_path.is_dir():
+        # Multiple images - always zip
+        zip_buffer = BytesIO()
+        with zipfile.ZipFile(zip_buffer, 'w', zipfile.ZIP_STORED if not compress else zipfile.ZIP_DEFLATED) as zip_file:
+            all_images = sorted([f for f in file_path.rglob('*.png') if f.is_file()])
+            for idx in image_indices:
+                if idx < len(all_images):
+                    arcname = all_images[idx].relative_to(file_path)
+                    zip_file.write(all_images[idx], arcname)
+        return zip_buffer.getvalue()
+    else:
+        raise ValueError(f"Invalid image path: {file_path}")
+
+
+def _prepare_audio_segment(file_path: Path, segment_info: Dict[str, Any], compress: bool) -> bytes:
+    """Prepare audio segment for transmission (always zip for multiple files)."""
+    file_indices = segment_info.get("file_indices", [])
+    
+    if file_path.is_file():
+        # Single audio file
+        with open(file_path, 'rb') as f:
+            data = f.read()
+        return gzip.compress(data) if compress else data
+    elif file_path.is_dir():
+        # Multiple audio files - always zip
+        zip_buffer = BytesIO()
+        with zipfile.ZipFile(zip_buffer, 'w', zipfile.ZIP_STORED if not compress else zipfile.ZIP_DEFLATED) as zip_file:
+            all_files = sorted([f for f in file_path.rglob('*.flac') if f.is_file()])
+            all_files.extend(sorted([f for f in file_path.rglob('*.wav') if f.is_file()]))
+            all_files.extend(sorted([f for f in file_path.rglob('*.mp3') if f.is_file()]))
+            for idx in file_indices:
+                if idx < len(all_files):
+                    arcname = all_files[idx].relative_to(file_path)
+                    zip_file.write(all_files[idx], arcname)
+        return zip_buffer.getvalue()
+    else:
+        raise ValueError(f"Invalid audio path: {file_path}")
+
+
+def _prepare_text_segment(file_path: Path, segment_info: Dict[str, Any], compress: bool) -> bytes:
+    """Prepare text segment for transmission."""
+    start_char = segment_info.get("start_char", 0)
+    end_char = segment_info.get("end_char", 0)
+    
+    if file_path.is_file():
+        with open(file_path, 'r', encoding='utf-8') as f:
+            content = f.read()
+        segment = content[start_char:end_char]
+        data = segment.encode('utf-8')
+    elif file_path.is_dir():
+        # For directories, read from JSONL files
+        segment_bytes = BytesIO()
+        for jsonl_file in sorted(file_path.rglob('*.jsonl')):
+            with open(jsonl_file, 'r', encoding='utf-8') as f:
+                content = f.read()
+            segment_bytes.write(content[start_char:end_char].encode('utf-8'))
+        data = segment_bytes.getvalue()
+    else:
+        raise ValueError(f"Invalid text path: {file_path}")
+    
+    if compress:
+        return gzip.compress(data)
+    return data
+
+
+def _prepare_graph_segment(file_path: Path, segment_info: Dict[str, Any], compress: bool) -> bytes:
+    """Prepare graph segment for transmission."""
+    node_range = segment_info.get("node_range", (0, 0))
+    start_node, end_node = node_range
+    
+    # For graph data, we need to extract the relevant nodes
+    # This is a simplified implementation - in practice, you'd need to parse the graph format
+    import csv
+    
+    # Read node features and filter by range
+    node_feat_file = file_path / 'node-feat.csv'
+    if node_feat_file.exists():
+        zip_buffer = BytesIO()
+        with zipfile.ZipFile(zip_buffer, 'w', zipfile.ZIP_DEFLATED if compress else zipfile.ZIP_STORED) as zip_file:
+            with open(node_feat_file, 'r', newline='') as f:
+                reader = csv.reader(f)
+                header = next(reader)
+                segment_rows = [header]
+                for i, row in enumerate(reader):
+                    if start_node <= i < end_node:
+                        segment_rows.append(row)
+            
+            # Write segment to zip
+            import io
+            segment_csv = io.StringIO()
+            writer = csv.writer(segment_csv)
+            writer.writerows(segment_rows)
+            zip_file.writestr('node-feat-segment.csv', segment_csv.getvalue())
+        
+        return zip_buffer.getvalue()
+    else:
+        # Fallback: return empty bytes
+        return b''
+
+
+def _prepare_rl_segment(file_path: Path, segment_info: Dict[str, Any], compress: bool) -> bytes:
+    """Prepare RL segment for transmission."""
+    episode_range = segment_info.get("episode_range", (0, 0))
+    start_episode, end_episode = episode_range
+    
+    trajectories_file = file_path / 'trajectories.npz'
+    if trajectories_file.exists():
+        # Load and extract relevant episodes
+        data = np.load(trajectories_file)
+        episode_starts = data.get('episode_starts', [])
+        
+        # Extract episodes in range
+        if len(episode_starts) > 1:
+            start_idx = episode_starts[start_episode] if start_episode < len(episode_starts) else 0
+            end_idx = episode_starts[end_episode] if end_episode < len(episode_starts) else len(data['observations'])
+            
+            segment_data = {}
+            for key in data.keys():
+                if key == 'episode_starts':
+                    # Adjust episode starts for segment
+                    segment_starts = [0]
+                    for i in range(start_episode + 1, min(end_episode + 1, len(episode_starts))):
+                        segment_starts.append(episode_starts[i] - start_idx)
+                    segment_data[key] = np.array(segment_starts)
+                else:
+                    segment_data[key] = data[key][start_idx:end_idx]
+            
+            # Save segment to bytes
+            segment_buffer = BytesIO()
+            np.savez_compressed(segment_buffer, **segment_data)
+            return segment_buffer.getvalue()
+    
+    return b''
+
+
+def _prepare_dir_segment(file_path: Path, segment_info: Dict[str, Any]) -> bytes:
+    """Prepare directory segment for transmission (always zip)."""
+    file_indices = segment_info.get("file_indices", [])
+    
+    zip_buffer = BytesIO()
+    with zipfile.ZipFile(zip_buffer, 'w', zipfile.ZIP_DEFLATED) as zip_file:
+        all_items = sorted([item for item in file_path.iterdir()])
+        for idx in file_indices:
+            if idx < len(all_items):
+                item = all_items[idx]
+                if item.is_file():
+                    zip_file.write(item, item.name)
+                elif item.is_dir():
+                    # Add entire subdirectory
+                    for sub_file in item.rglob('*'):
+                        if sub_file.is_file():
+                            arcname = sub_file.relative_to(file_path)
+                            zip_file.write(sub_file, arcname)
+    
+    return zip_buffer.getvalue()
 

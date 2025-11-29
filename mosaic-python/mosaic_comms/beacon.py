@@ -2,6 +2,7 @@
 
 import json
 import logging
+import pickle
 import socket
 import ssl
 import threading
@@ -11,6 +12,12 @@ from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Union
 
 from mosaic_config.config import MosaicConfig, Peer
+from mosaic_planner.planner import (
+    deserialize_plan_with_data,
+    prepare_file_data_for_transmission,
+    serialize_plan_with_data,
+)
+from mosaic_planner.state import Data, FileDefinition, Plan
 from mosaic_stats.benchmark import load_benchmarks
 from mosaic_stats.stats_collector import StatsCollector
 
@@ -83,6 +90,7 @@ class Beacon:
         self.register("add_peer", self._handle_add_peer)
         self.register("ping", self._handle_ping_test)
         self.register("stats", self._handle_stats)
+        self.register("exdplan", self._handle_execute_data_plan)
 
         # Thread control
         self._stop_event = threading.Event()
@@ -730,7 +738,7 @@ class Beacon:
         Processes commands and acts accordingly.
 
         Args:
-            payload: The received payload (JSON dict or bytes)
+            payload: The received payload (JSON dict with "command" and "payload" keys)
         
         Returns:
             Optional value that will be sent back to the caller if not None
@@ -763,6 +771,7 @@ class Beacon:
         handler = self._command_handlers.get(command)
         if handler:
             try:
+                # Handler receives the command_payload directly (can be dict or bytes)
                 result = handler(command_payload)
                 return result
             except Exception as e:
@@ -1113,6 +1122,195 @@ class Beacon:
                 logger.error(f"Error adding local node stats: {e}")
 
         return status_request_cache
+
+    def _is_self_host(self, host: str, port: int) -> bool:
+        """
+        Check if the given host and port refer to the current Beacon instance.
+        
+        Args:
+            host: Host address to check
+            port: Port to check
+        
+        Returns:
+            True if host/port matches this Beacon instance, False otherwise
+        """
+        # Check if host matches localhost variants
+        localhost_variants = ["localhost", "127.0.0.1", "::1", "0.0.0.0"]
+        if host.lower() in localhost_variants or host in localhost_variants:
+            # Check if port matches
+            if port == self.config.comms_port:
+                return True
+        
+        # Check if host matches configured host
+        if host == self.config.host:
+            if port == self.config.comms_port:
+                return True
+        
+        # Check if host is one of the local IP addresses
+        try:
+            import socket as sock
+            # Get local hostname
+            local_hostname = sock.gethostname()
+            if host == local_hostname and port == self.config.comms_port:
+                return True
+            
+            # Get local IP addresses
+            local_ips = []
+            try:
+                # Try to get primary IP
+                s = sock.socket(sock.AF_INET, sock.SOCK_DGRAM)
+                s.connect(("8.8.8.8", 80))
+                local_ips.append(s.getsockname()[0])
+                s.close()
+            except Exception:
+                pass
+            
+            # Check all local IPs
+            for local_ip in local_ips:
+                if host == local_ip and port == self.config.comms_port:
+                    return True
+        except Exception:
+            pass
+        
+        return False
+
+    def execute_data_plan(self, plan: Plan, data: Data) -> None:
+        """
+        Execute a data distribution plan by sending data segments to nodes.
+        
+        Reads the data_segmentation_plan from the Plan, prepares file data,
+        and distributes it to the appropriate nodes via host/comms_port.
+        If a node is the current host, calls the handler directly.
+        
+        Args:
+            plan: Plan object with data_segmentation_plan
+            data: Data object with file definitions
+        """
+        if not plan.data_segmentation_plan:
+            logger.warning("Plan has no data_segmentation_plan")
+            return
+        
+        # Create a mapping of file location to FileDefinition for quick lookup
+        file_def_map = {fd.location: fd for fd in data.file_definitions}
+        
+        # Process each machine's segments
+        for machine_plan in plan.data_segmentation_plan:
+            host = machine_plan.get("host")
+            comms_port = machine_plan.get("comms_port")
+            segments = machine_plan.get("segments", [])
+            
+            if not host or not comms_port:
+                logger.warning(f"Invalid machine plan: missing host or comms_port")
+                continue
+            
+            # Prepare data for this machine
+            machine_data = Data(file_definitions=[])
+            
+            for segment in segments:
+                file_location = segment.get("file_location")
+                if not file_location:
+                    continue
+                
+                # Find corresponding FileDefinition
+                file_def = file_def_map.get(file_location)
+                if not file_def:
+                    logger.warning(f"FileDefinition not found for location: {file_location}")
+                    continue
+                
+                # Prepare file data for transmission
+                try:
+                    binary_data = prepare_file_data_for_transmission(
+                        file_def=file_def,
+                        segment_info=segment,
+                        data_folder=self.config.data_location,
+                    )
+                    
+                    # Create new FileDefinition with binary data
+                    new_file_def = FileDefinition(
+                        location=file_def.location,
+                        data_type=file_def.data_type,
+                        is_segmentable=file_def.is_segmentable,
+                        binary_data=binary_data,
+                    )
+                    machine_data.file_definitions.append(new_file_def)
+                except Exception as e:
+                    logger.error(f"Error preparing data for {file_location}: {e}")
+                    continue
+            
+            # Serialize plan and data for this machine
+            try:
+                # Create a machine-specific plan (just the segments for this machine)
+                machine_plan_obj = Plan(
+                    stats_data=plan.stats_data,
+                    distribution_plan=plan.distribution_plan,
+                    model=plan.model,
+                    data_segmentation_plan=[machine_plan],  # Only this machine's plan
+                )
+                
+                serialized_data = serialize_plan_with_data(machine_plan_obj, machine_data)
+            except Exception as e:
+                logger.error(f"Error serializing data for {host}:{comms_port}: {e}")
+                continue
+            
+            # Send to node (or call handler directly if self)
+            if self._is_self_host(host, comms_port):
+                # Call handler directly
+                try:
+                    logger.info(f"Executing data plan locally for {host}:{comms_port}")
+                    self._handle_execute_data_plan(serialized_data)
+                except Exception as e:
+                    logger.error(f"Error executing data plan locally: {e}")
+            else:
+                # Send to remote node
+                try:
+                    logger.info(f"Sending data plan to {host}:{comms_port}")
+                    result = self.send_command(
+                        host=host,
+                        port=comms_port,
+                        command="exdplan",
+                        payload=serialized_data,
+                        timeout=300.0,  # Longer timeout for data transfer
+                    )
+                    if result is None:
+                        logger.warning(f"No response from {host}:{comms_port} for data plan")
+                except Exception as e:
+                    logger.error(f"Error sending data plan to {host}:{comms_port}: {e}")
+
+    def _handle_execute_data_plan(self, payload: Union[Dict[str, Any], bytes]) -> Optional[Dict[str, Any]]:
+        """
+        Handle execute data plan command.
+        
+        Receives serialized Plan and Data, deserializes them, and stores
+        the binary data in FileDefinition objects.
+        
+        Args:
+            payload: Serialized bytes containing Plan and Data
+        
+        Returns:
+            Dictionary with status information
+        """
+        if not isinstance(payload, bytes):
+            logger.error("execute_data_plan payload must be bytes")
+            return {"status": "error", "message": "Payload must be bytes"}
+        
+        try:
+            # Deserialize plan and data
+            plan, data = deserialize_plan_with_data(payload, compressed=True)
+            
+            logger.info(f"Received data plan with {len(data.file_definitions)} file definitions")
+            
+            # The binary_data is already set in FileDefinition objects
+            # Store or process the data as needed
+            # For now, just log the receipt
+            
+            return {
+                "status": "success",
+                "message": f"Received {len(data.file_definitions)} file definitions",
+                "file_count": len(data.file_definitions),
+            }
+        except Exception as e:
+            logger.error(f"Error handling execute_data_plan: {e}")
+            return {"status": "error", "message": str(e)}
 
     def stop(self) -> None:
         """
