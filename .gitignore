@@ -169,3 +169,12 @@ cython_debug/
 
 # PyPI configuration file
 .pypirc
+
+# Cursor settings
+.cursor/
+
+# Local resources folder
+resources/
+
+# Files created when MOSAIC is running
+mosaic_state.json

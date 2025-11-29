@@ -1,0 +1,282 @@
+[
+    {
+      "gpu_identifier": [
+        "nvidia h100",
+        "nvidia h100 sxm5",
+        "h100 sxm5 80gb",
+        "nvidia h100 80gb hbm3"
+      ],
+      "gflops": 67000.0,
+      "type": "Data Center GPU (FP32 Vector)"
+    },
+    {
+      "gpu_identifier": [
+        "nvidia h100 pcie",
+        "h100 pcie 80gb",
+        "nvidia h100 80gb pcie"
+      ],
+      "gflops": 51000.0,
+      "type": "Data Center GPU (FP32 Vector)"
+    },
+    {
+      "gpu_identifier": [
+        "nvidia l40s",
+        "l40s",
+        "nvidia l40s 48gb"
+      ],
+      "gflops": 91600.0,
+      "type": "Data Center GPU (FP32)"
+    },
+    {
+      "gpu_identifier": [
+        "nvidia rtx 4000 sff ada generation",
+        "rtx 4000 sff ada",
+        "nvidia rtx 4000 sff"
+      ],
+      "gflops": 19200.0,
+      "type": "Workstation GPU (FP32)"
+    },
+    {
+      "gpu_identifier": [
+        "nvidia rtx a6000",
+        "rtx a6000",
+        "nvidia rtx a6000 48gb"
+      ],
+      "gflops": 38700.0,
+      "type": "Workstation GPU (FP32)"
+    },
+    {
+      "gpu_identifier": [
+        "habana gaudi",
+        "habana gaudi hl-205",
+        "habana labs gaudi"
+      ],
+      "gflops": 40000.0,
+      "type": "AI Accelerator (FP32)"
+    },
+    {
+      "gpu_identifier": [
+        "habana gaudi 2",
+        "habana gaudi2",
+        "hl-225"
+      ],
+      "gflops": 432000.0,
+      "type": "AI Accelerator (BF16 Tensor Peak - FP32 Equivalent efficiency)"
+    },
+    {
+      "gpu_identifier": [
+        "amd epyc 7r13",
+        "amd epyc 7r13 processor",
+        "epyc 7r13"
+      ],
+      "gflops": 2300.0,
+      "type": "CPU (Custom AWS Milan, Est. Rpeak DP)"
+    },
+    {
+      "gpu_identifier": [
+        "intel xeon platinum 8175m",
+        "xeon platinum 8175m",
+        "intel xeon 8175m"
+      ],
+      "gflops": 1920.0,
+      "type": "CPU (Skylake-SP, Rpeak DP)"
+    },
+    {
+      "gpu_identifier": [
+        "nvidia a100-sxm4-40gb",
+        "nvidia a100 sxm4 40gb",
+        "a100 sxm4"
+      ],
+      "gflops": 19500.0,
+      "type": "Data Center GPU (FP32)"
+    },
+    {
+      "gpu_identifier": [
+        "nvidia a100-pcie-40gb",
+        "nvidia a100 pcie 40gb",
+        "a100 pcie"
+      ],
+      "gflops": 19500.0,
+      "type": "Data Center GPU (FP32)"
+    },
+    {
+      "gpu_identifier": [
+        "nvidia a100-sxm4-80gb",
+        "nvidia a100 sxm4 80gb",
+        "a100 80gb"
+      ],
+      "gflops": 19500.0,
+      "type": "Data Center GPU (FP32)"
+    },
+    {
+      "gpu_identifier": [
+        "nvidia a10",
+        "nvidia a10g",
+        "a10g"
+      ],
+      "gflops": 31200.0,
+      "type": "Data Center GPU (FP32)"
+    },
+    {
+      "gpu_identifier": [
+        "nvidia l4",
+        "nvidia l4 24gb",
+        "l4"
+      ],
+      "gflops": 30300.0,
+      "type": "Data Center GPU (FP32)"
+    },
+    {
+      "gpu_identifier": [
+        "nvidia t4",
+        "tesla t4",
+        "nvidia tesla t4"
+      ],
+      "gflops": 8100.0,
+      "type": "Data Center GPU (FP32)"
+    },
+    {
+      "gpu_identifier": [
+        "nvidia v100-sxm2-32gb",
+        "tesla v100-sxm2-32gb",
+        "v100 sxm2"
+      ],
+      "gflops": 15700.0,
+      "type": "Data Center GPU (FP32)"
+    },
+    {
+      "gpu_identifier": [
+        "nvidia rtx 6000 ada generation",
+        "rtx 6000 ada",
+        "nvidia rtx 6000 ada"
+      ],
+      "gflops": 91100.0,
+      "type": "Workstation GPU (FP32)"
+    },
+    {
+      "gpu_identifier": [
+        "nvidia rtx 5000 ada generation",
+        "rtx 5000 ada"
+      ],
+      "gflops": 65300.0,
+      "type": "Workstation GPU (FP32)"
+    },
+    {
+      "gpu_identifier": [
+        "nvidia rtx 4000 ada generation",
+        "rtx 4000 ada"
+      ],
+      "gflops": 26700.0,
+      "type": "Workstation GPU (FP32)"
+    },
+    {
+      "gpu_identifier": [
+        "nvidia geforce rtx 4090",
+        "geforce rtx 4090",
+        "rtx 4090"
+      ],
+      "gflops": 82600.0,
+      "type": "Consumer GPU (FP32)"
+    },
+    {
+      "gpu_identifier": [
+        "nvidia geforce rtx 4080",
+        "geforce rtx 4080",
+        "rtx 4080"
+      ],
+      "gflops": 48700.0,
+      "type": "Consumer GPU (FP32)"
+    },
+    {
+      "gpu_identifier": [
+        "nvidia geforce rtx 3090",
+        "geforce rtx 3090",
+        "rtx 3090"
+      ],
+      "gflops": 35600.0,
+      "type": "Consumer GPU (FP32)"
+    },
+    {
+      "gpu_identifier": [
+        "amd instinct mi250x",
+        "instinct mi250x",
+        "amd mi250x"
+      ],
+      "gflops": 47900.0,
+      "type": "Data Center GPU (FP32 Vector)"
+    },
+    {
+      "gpu_identifier": [
+        "amd instinct mi210",
+        "instinct mi210",
+        "amd mi210"
+      ],
+      "gflops": 22600.0,
+      "type": "Data Center GPU (FP32 Vector)"
+    },
+    {
+      "gpu_identifier": [
+        "amd instinct mi100",
+        "instinct mi100",
+        "amd mi100"
+      ],
+      "gflops": 23100.0,
+      "type": "Data Center GPU (FP32 Vector)"
+    },
+    {
+      "gpu_identifier": [
+        "amd epyc 7763",
+        "amd epyc 7763 64-core processor"
+      ],
+      "gflops": 2508.0,
+      "type": "CPU (Rpeak DP)"
+    },
+    {
+      "gpu_identifier": [
+        "amd epyc 7713",
+        "amd epyc 7713 64-core processor"
+      ],
+      "gflops": 2048.0,
+      "type": "CPU (Rpeak DP)"
+    },
+    {
+      "gpu_identifier": [
+        "amd epyc 7543",
+        "amd epyc 7543 32-core processor"
+      ],
+      "gflops": 1433.0,
+      "type": "CPU (Rpeak DP)"
+    },
+    {
+      "gpu_identifier": [
+        "intel xeon platinum 8380",
+        "xeon platinum 8380"
+      ],
+      "gflops": 3020.0,
+      "type": "CPU (Rpeak DP)"
+    },
+    {
+      "gpu_identifier": [
+        "intel xeon gold 6348",
+        "xeon gold 6348"
+      ],
+      "gflops": 2188.0,
+      "type": "CPU (Rpeak DP)"
+    },
+    {
+      "gpu_identifier": [
+        "intel xeon platinum 8280",
+        "xeon platinum 8280"
+      ],
+      "gflops": 2442.0,
+      "type": "CPU (Rpeak DP)"
+    },
+    {
+      "gpu_identifier": [
+        "intel xeon gold 6248",
+        "xeon gold 6248"
+      ],
+      "gflops": 1280.0,
+      "type": "CPU (Rpeak DP)"
+    }
+  ]

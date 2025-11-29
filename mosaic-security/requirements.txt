@@ -1,0 +1,12 @@
+# Optional dependencies for MOSAIC SSL certificate generation utility
+# 
+# The generate_certs.py script will work without these if OpenSSL or Java keytool
+# are available. Install this if you want to use the Python cryptography fallback:
+#
+# pip install -r requirements.txt
+#
+# Or install individually:
+# pip install cryptography
+
+cryptography>=41.0.0
+

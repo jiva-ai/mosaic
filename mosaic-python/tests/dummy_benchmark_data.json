@@ -1,0 +1,34 @@
+{
+  "timestamp_ms": 1234567890123,
+  "host": "test-host",
+  "disk": {
+    "write_speed_mbps": 150.5,
+    "read_speed_mbps": 200.3,
+    "test_size_bytes": 1048576
+  },
+  "cpu": {
+    "gflops": 75.8,
+    "test_size": 1000,
+    "iterations": 100
+  },
+  "gpus": [
+    {
+      "gpu_id": 0,
+      "gflops": 1200.5,
+      "type": "nvidia",
+      "name": "NVIDIA RTX 4090"
+    },
+    {
+      "gpu_id": 1,
+      "gflops": 1100.2,
+      "type": "nvidia",
+      "name": "NVIDIA RTX 4080"
+    }
+  ],
+  "ram": {
+    "bandwidth_gbps": 25.5,
+    "test_size_mb": 10.0,
+    "iterations": 100
+  }
+}
+

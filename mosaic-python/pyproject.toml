@@ -1,0 +1,34 @@
+[project]
+name = "mosaic-python"
+version = "0.1.0"
+description = "A collection of Python modules"
+requires-python = ">=3.11"
+readme = "README.md"
+dependencies = [
+    "psutil>=5.9.0",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["mosaic_comms", "mosaic_config", "mosaic", "mosaic_planner", "mosaic_stats"]
+
+[tool.uv]
+dev-dependencies = [
+    "pytest>=8.0.0",
+]
+
+[tool.uv.workspace]
+# Add module paths here as you create them
+# Example: members = ["modules/module1", "modules/module2"]
+
+[tool.black]
+line-length = 100
+target-version = ['py311']
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
