@@ -426,6 +426,7 @@ class TestBeaconPortListeners:
         """Test that TCP listener calls run_receive_comms."""
         with patch("mosaic_comms.beacon.StatsCollector") as mock_stats_class:
             mock_stats = MagicMock()
+            mock_stats.get_last_stats_json.return_value = '{"cpu_percent": 45.3}'
             mock_stats_class.return_value = mock_stats
 
             beacon = Beacon(beacon_config_no_ssl)
@@ -435,19 +436,31 @@ class TestBeaconPortListeners:
                 # Wait for listener to start
                 time.sleep(1.0)
 
-                # Send TCP packet
-                payload = {
-                    "command": "add_peer",
-                    "payload": {
-                        "host": "192.168.1.100",
-                        "comms_port": 6001,
-                        "heartbeat_port": 6000,
-                    },
+                # Send TCP packet using new header format
+                command_payload = {
+                    "host": "192.168.1.100",
+                    "comms_port": 6001,
+                    "heartbeat_port": 6000,
                 }
+                
+                # Serialize payload to bytes
+                payload_bytes = json.dumps(command_payload).encode("utf-8")
+                
+                # Create header
+                header = {
+                    "command": "add_peer",
+                    "payload_type": "json",
+                    "payload_length": len(payload_bytes),
+                }
+                header_bytes = json.dumps(header).encode("utf-8")
+                
+                # Send: [4-byte header length][JSON header][payload bytes]
+                header_length = len(header_bytes).to_bytes(4, byteorder="big")
+                message = header_length + header_bytes + payload_bytes
 
                 sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
                 sock.connect((beacon_config_no_ssl.host, beacon_config_no_ssl.comms_port))
-                sock.send(json.dumps(payload).encode("utf-8"))
+                sock.sendall(message)
                 sock.close()
 
                 # Wait for processing
@@ -600,19 +613,89 @@ class TestBeaconCommandRegistration:
                     "nested": {"inner": "data"},
                 }
 
-                # Send ping command from beacon1 to beacon2
-                response = beacon1.send_command(
+                # Send ping command from beacon1 to beacon2 (first time)
+                response1 = beacon1.send_command(
                     host=sender_config_no_ssl.host,
                     port=sender_config_no_ssl.comms_port,
                     command="ping",
                     payload=test_payload,
                 )
 
-                # Verify response is not None
-                assert response is not None, "send_command should return a response"
-
+                # Verify first response is not None
+                assert response1 is not None, "send_command should return a response (first call)"
                 # Verify the returned JSON is equivalent to what was sent
-                assert response == test_payload, f"Expected {test_payload}, got {response}"
+                assert response1 == test_payload, f"Expected {test_payload}, got {response1}"
+
+                # Send ping command from beacon1 to beacon2 (second time)
+                # This ensures there is no early socket closure on the receiving end
+                response2 = beacon1.send_command(
+                    host=sender_config_no_ssl.host,
+                    port=sender_config_no_ssl.comms_port,
+                    command="ping",
+                    payload=test_payload,
+                )
+
+                # Verify second response is not None
+                assert response2 is not None, "send_command should return a response (second call)"
+                # Verify the returned JSON is equivalent to what was sent
+                assert response2 == test_payload, f"Expected {test_payload}, got {response2}"
+
+            finally:
+                beacon1.stop()
+                beacon2.stop()
+
+    def test_send_command_ping_with_binary_payload(self, beacon_config_no_ssl, sender_config_no_ssl):
+        """Test that send_command with ping command can send and receive 128 bytes of binary data."""
+        with patch("mosaic_comms.beacon.StatsCollector") as mock_stats_class:
+            mock_stats = MagicMock()
+            mock_stats.get_last_stats_json.return_value = '{"cpu_percent": 45.3}'
+            mock_stats_class.return_value = mock_stats
+
+            # Create two beacons on different ports
+            beacon1 = Beacon(beacon_config_no_ssl)
+            beacon2 = Beacon(sender_config_no_ssl)
+
+            # Start both beacons
+            beacon1.start()
+            beacon2.start()
+
+            try:
+                # Wait for both listeners to start
+                time.sleep(1.0)
+
+                # Prepare 128 bytes of binary data
+                test_binary_payload = bytes(range(128))  # 0x00 to 0x7F
+
+                # Send ping command from beacon1 to beacon2 with binary payload (first time)
+                response1 = beacon1.send_command(
+                    host=sender_config_no_ssl.host,
+                    port=sender_config_no_ssl.comms_port,
+                    command="ping",
+                    payload=test_binary_payload,
+                )
+
+                # Verify first response is not None
+                assert response1 is not None, "send_command should return a response (first call)"
+                # Verify the returned bytes match what was sent
+                assert isinstance(response1, bytes), f"Expected bytes, got {type(response1)}"
+                assert len(response1) == 128, f"Expected 128 bytes, got {len(response1)}"
+                assert response1 == test_binary_payload, f"Binary payload mismatch (first call)"
+
+                # Send ping command from beacon1 to beacon2 with binary payload (second time)
+                # This ensures there is no early socket closure on the receiving end
+                response2 = beacon1.send_command(
+                    host=sender_config_no_ssl.host,
+                    port=sender_config_no_ssl.comms_port,
+                    command="ping",
+                    payload=test_binary_payload,
+                )
+
+                # Verify second response is not None
+                assert response2 is not None, "send_command should return a response (second call)"
+                # Verify the returned bytes match what was sent
+                assert isinstance(response2, bytes), f"Expected bytes, got {type(response2)}"
+                assert len(response2) == 128, f"Expected 128 bytes, got {len(response2)}"
+                assert response2 == test_binary_payload, f"Binary payload mismatch (second call)"
 
             finally:
                 beacon1.stop()

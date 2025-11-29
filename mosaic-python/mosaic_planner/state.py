@@ -1,4 +1,4 @@
-"""State management classes for Mosaic network."""
+"""Planning state management classes for Mosaic network."""
 
 import time
 from dataclasses import dataclass, field

@@ -8,7 +8,7 @@ import threading
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional, Union
 
 from mosaic_config.config import MosaicConfig, Peer
 from mosaic_stats.benchmark import load_benchmarks
@@ -76,7 +76,8 @@ class Beacon:
         self._receive_heartbeat_statuses: Dict[tuple[str, int], ReceiveHeartbeatStatus] = {}
 
         # Command handler registry
-        self._command_handlers: Dict[str, Callable[[Dict[str, Any]], Optional[Any]]] = {}
+        # Handlers can accept Dict (JSON) or bytes (binary/pickled) payloads
+        self._command_handlers: Dict[str, Callable[[Union[Dict[str, Any], bytes]], Optional[Any]]] = {}
         
         # Register default command handlers
         self.register("add_peer", self._handle_add_peer)
@@ -446,40 +447,129 @@ class Beacon:
             return None
 
     def _handle_comms_connection(self, client_sock: socket.socket, addr: tuple) -> None:
-        """Handle a single TCP comms connection."""
+        """
+        Handle a single TCP comms connection.
+        
+        Always expects header format: 4-byte header length (big-endian) + JSON header + payload
+        Header: {"command": "...", "payload_type": "json"|"binary", "payload_length": N}
+        """
         try:
-            # Receive all data using chunked receiving
-            data = self._receive_chunked_data(client_sock, addr)
-            if data is None:
-                return
-
-            # Try to parse as JSON
-            payload = None
+            # Always expect header format: read 4-byte header length first
+            header_length_bytes = b""
+            while len(header_length_bytes) < 4:
+                chunk = client_sock.recv(4 - len(header_length_bytes))
+                if not chunk:
+                    logger.warning(f"Connection closed before header length from {addr}")
+                    return
+                header_length_bytes += chunk
+            
+            # Parse header length
             try:
-                payload = json.loads(data.decode("utf-8"))
-            except (json.JSONDecodeError, UnicodeDecodeError):
-                # If not JSON, pass raw bytes
-                payload = data
+                header_length = int.from_bytes(header_length_bytes, byteorder="big")
+                # Reasonable check: header should be between 10 and 1MB
+                if not (10 <= header_length <= 1024 * 1024):
+                    logger.warning(f"Invalid header length: {header_length}")
+                    return
+            except (ValueError, OverflowError):
+                logger.warning(f"Failed to parse header length from {addr}")
+                return
+            
+            # Read the JSON header
+            header_bytes = b""
+            while len(header_bytes) < header_length:
+                chunk = client_sock.recv(header_length - len(header_bytes))
+                if not chunk:
+                    logger.warning(f"Connection closed before header from {addr}")
+                    return
+                header_bytes += chunk
+            
+            # Parse header
+            try:
+                header = json.loads(header_bytes.decode("utf-8"))
+            except (json.JSONDecodeError, UnicodeDecodeError) as e:
+                logger.warning(f"Failed to parse header JSON from {addr}: {e}")
+                return
+            
+            # Extract command and payload type
+            command = header.get("command")
+            payload_type = header.get("payload_type")
+            payload_length = header.get("payload_length", 0)
+            
+            if command is None:
+                logger.warning(f"Header missing 'command' field from {addr}")
+                return
+            
+            # Read payload based on type
+            if payload_type == "binary":
+                # Read binary payload
+                payload_data = b""
+                while len(payload_data) < payload_length:
+                    chunk = client_sock.recv(min(1024 * 1024, payload_length - len(payload_data)))
+                    if not chunk:
+                        logger.warning(f"Connection closed before complete binary payload from {addr}")
+                        return
+                    payload_data += chunk
+                # Construct payload dict with command and binary payload
+                payload = {
+                    "command": command,
+                    "payload": payload_data,
+                }
+            elif payload_type == "json":
+                # Read JSON payload
+                payload_data = b""
+                while len(payload_data) < payload_length:
+                    chunk = client_sock.recv(min(1024 * 1024, payload_length - len(payload_data)))
+                    if not chunk:
+                        logger.warning(f"Connection closed before complete JSON payload from {addr}")
+                        return
+                    payload_data += chunk
+                # Parse JSON payload
+                try:
+                    json_payload = json.loads(payload_data.decode("utf-8"))
+                    payload = {
+                        "command": command,
+                        "payload": json_payload,
+                    }
+                except (json.JSONDecodeError, UnicodeDecodeError) as e:
+                    logger.warning(f"Failed to parse JSON payload from {addr}: {e}")
+                    return
+            else:
+                logger.warning(f"Unknown payload_type '{payload_type}' from {addr}")
+                return
 
             # Call handler in try/except as requested
             try:
                 result = self.run_receive_comms(payload)
                 
                 # If run_receive_comms returns a non-None value, send it back
+                # Always use header format: 4-byte header length + JSON header + payload
                 if result is not None:
                     try:
-                        # Serialize result to JSON if it's a dict/list, otherwise convert to string
-                        if isinstance(result, (dict, list)):
-                            response = json.dumps(result).encode("utf-8")
+                        # Determine payload type and serialize
+                        if isinstance(result, bytes):
+                            payload_bytes = result
+                            payload_type = "binary"
+                        elif isinstance(result, (dict, list)):
+                            payload_bytes = json.dumps(result).encode("utf-8")
+                            payload_type = "json"
                         elif isinstance(result, str):
-                            response = result.encode("utf-8")
-                        elif isinstance(result, bytes):
-                            response = result
+                            payload_bytes = result.encode("utf-8")
+                            payload_type = "json"  # Strings are sent as JSON-encoded
                         else:
                             # Convert other types to JSON
-                            response = json.dumps(result).encode("utf-8")
+                            payload_bytes = json.dumps(result).encode("utf-8")
+                            payload_type = "json"
                         
-                        client_sock.sendall(response)
+                        # Create header
+                        header = {
+                            "payload_type": payload_type,
+                            "payload_length": len(payload_bytes),
+                        }
+                        header_bytes = json.dumps(header).encode("utf-8")
+                        # Send header length (4 bytes, big-endian), then header, then payload
+                        header_length = len(header_bytes).to_bytes(4, byteorder="big")
+                        response_message = header_length + header_bytes + payload_bytes
+                        client_sock.sendall(response_message)
                     except Exception as e:
                         logger.error(f"Error sending response to {addr}: {e}")
             except Exception as e:
@@ -687,7 +777,7 @@ class Beacon:
         host: str,
         port: int,
         command: str,
-        payload: Dict[str, Any],
+        payload: Union[Dict[str, Any], bytes],
         timeout: float = 30.0,
     ) -> Optional[Any]:
         """
@@ -700,7 +790,7 @@ class Beacon:
             host: Target host address
             port: Target comms port
             command: Command name to send
-            payload: Command payload dictionary
+            payload: Command payload - either a Dict (JSON) or bytes (pickled/binary)
             timeout: Connection and receive timeout in seconds (default: 30.0)
 
         Returns:
@@ -742,11 +832,26 @@ class Beacon:
                     return None
 
             # Prepare command message
-            message = {
+            # Always use header format: 4-byte header length + JSON header + payload
+            if isinstance(payload, bytes):
+                # Binary payload
+                payload_bytes = payload
+                payload_type = "binary"
+            else:
+                # JSON payload - serialize to bytes
+                payload_bytes = json.dumps(payload).encode("utf-8")
+                payload_type = "json"
+            
+            # Create header with command, payload type, and payload length
+            header = {
                 "command": command,
-                "payload": payload,
+                "payload_type": payload_type,
+                "payload_length": len(payload_bytes),
             }
-            message_bytes = json.dumps(message).encode("utf-8")
+            header_bytes = json.dumps(header).encode("utf-8")
+            # Send header length (4 bytes, big-endian), then header, then payload
+            header_length = len(header_bytes).to_bytes(4, byteorder="big")
+            message_bytes = header_length + header_bytes + payload_bytes
 
             # Send command
             try:
@@ -755,57 +860,84 @@ class Beacon:
                 logger.error(f"Failed to send command to {host}:{port}: {e}")
                 return None
 
-            # Receive response using chunked receiving
-            chunks = []
-            chunk_size = 1024 * 1024  # Read in 1MB chunks
-
-            while True:
-                try:
-                    chunk = sock.recv(chunk_size)
-                    if not chunk:
-                        # Empty chunk means connection closed by peer
-                        break
-                    chunks.append(chunk)
-
-                    # Try to parse as JSON after each chunk to detect complete message
-                    try:
-                        data = b"".join(chunks)
-                        decoded = data.decode("utf-8")
-                        # Attempt to parse - if successful, we have complete message
-                        json.loads(decoded)
-                        # If we get here, JSON is valid and complete, stop reading
-                        break
-                    except json.JSONDecodeError:
-                        # JSON not complete yet, continue reading
-                        continue
-                    except UnicodeDecodeError:
-                        # Not valid UTF-8 yet, might be incomplete, continue reading
-                        continue
-                except socket.timeout:
-                    logger.warning(f"Timeout receiving response from {host}:{port}")
-                    break
-                except Exception as e:
-                    logger.error(f"Error receiving response from {host}:{port}: {e}")
-                    break
-
-            # Combine all chunks
-            response_data = b"".join(chunks)
-
-            if not response_data:
-                logger.debug(f"No response received from {host}:{port}")
-                return None
-
-            # Parse response
+            # Receive response - always expect header format
             try:
-                # Try to parse as JSON first
-                response = json.loads(response_data.decode("utf-8"))
-                return response
-            except (json.JSONDecodeError, UnicodeDecodeError):
-                # If not JSON, return as bytes or string
-                try:
-                    return response_data.decode("utf-8")
-                except UnicodeDecodeError:
+                # Read header length (4 bytes)
+                header_length_bytes = b""
+                while len(header_length_bytes) < 4:
+                    chunk = sock.recv(4 - len(header_length_bytes))
+                    if not chunk:
+                        logger.warning(f"Connection closed before response header length from {host}:{port}")
+                        return None
+                    header_length_bytes += chunk
+                
+                # Parse header length
+                header_length = int.from_bytes(header_length_bytes, byteorder="big")
+                if not (10 <= header_length <= 1024 * 1024):
+                    logger.error(f"Invalid response header length: {header_length}")
+                    return None
+                
+                # Read the JSON header
+                header_bytes = b""
+                while len(header_bytes) < header_length:
+                    chunk = sock.recv(header_length - len(header_bytes))
+                    if not chunk:
+                        logger.warning(f"Connection closed before response header from {host}:{port}")
+                        return None
+                    header_bytes += chunk
+                
+                # Parse header
+                header = json.loads(header_bytes.decode("utf-8"))
+                payload_type = header.get("payload_type")
+                payload_length = header.get("payload_length", 0)
+                
+                if payload_type is None:
+                    logger.warning(f"Response header missing 'payload_type' from {host}:{port}")
+                    return None
+                
+                # Read payload based on type
+                if payload_type == "binary":
+                    # Read binary payload
+                    response_data = b""
+                    while len(response_data) < payload_length:
+                        chunk = sock.recv(min(1024 * 1024, payload_length - len(response_data)))
+                        if not chunk:
+                            logger.warning(f"Connection closed before complete binary response from {host}:{port}")
+                            return None
+                        response_data += chunk
                     return response_data
+                elif payload_type == "json":
+                    # Read JSON payload
+                    response_data = b""
+                    while len(response_data) < payload_length:
+                        chunk = sock.recv(min(1024 * 1024, payload_length - len(response_data)))
+                        if not chunk:
+                            logger.warning(f"Connection closed before complete JSON response from {host}:{port}")
+                            return None
+                        response_data += chunk
+                    # Parse JSON
+                    try:
+                        response = json.loads(response_data.decode("utf-8"))
+                        return response
+                    except (json.JSONDecodeError, UnicodeDecodeError) as e:
+                        logger.error(f"Failed to parse JSON response from {host}:{port}: {e}")
+                        return None
+                else:
+                    logger.warning(f"Unknown response payload_type '{payload_type}' from {host}:{port}")
+                    return None
+                    
+            except socket.timeout:
+                logger.warning(f"Timeout receiving response from {host}:{port}")
+                return None
+            except (ValueError, OverflowError) as e:
+                logger.error(f"Error parsing response header length from {host}:{port}: {e}")
+                return None
+            except (json.JSONDecodeError, UnicodeDecodeError) as e:
+                logger.error(f"Error parsing response header from {host}:{port}: {e}")
+                return None
+            except Exception as e:
+                logger.error(f"Unexpected error receiving response from {host}:{port}: {e}")
+                return None
 
         except Exception as e:
             logger.error(f"Unexpected error in send_command to {host}:{port}: {e}")
@@ -856,15 +988,15 @@ class Beacon:
         self.config.peers.append(new_peer)
         logger.info(f"Added new peer: {host}:{comms_port}/{heartbeat_port}")
 
-    def _handle_ping_test(self, payload: Dict[str, Any]) -> Dict[str, Any]:
+    def _handle_ping_test(self, payload: Union[Dict[str, Any], bytes]) -> Union[Dict[str, Any], bytes]:
         """
         Handle ping command.
 
         Args:
-            payload: Dictionary payload to echo back
+            payload: Dictionary or bytes payload to echo back
 
         Returns:
-            The same payload dictionary
+            The same payload (dict or bytes)
         """
         return payload
 
