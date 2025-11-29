@@ -2,11 +2,11 @@
 
 from unittest.mock import MagicMock, patch
 
-from mosaic.mosaic import plan_distribution
+from mosaic.mosaic import calculate_data_distribution
 
 
-def test_plan_distribution_weighted_shard_default():
-    """Test that plan_distribution calls plan_static_weighted_shards when method is None."""
+def test_calculate_data_distribution_weighted_shard_default():
+    """Test that calculate_data_distribution calls plan_static_weighted_shards when method is None."""
     mock_beacon = MagicMock()
     mock_stats_data = [
         {"host": "node1", "connection_status": "online"},
@@ -21,7 +21,7 @@ def test_plan_distribution_weighted_shard_default():
                 {"host": "node2", "allocated_samples": 1},
             ]
             
-            plan_distribution(method=None)
+            calculate_data_distribution(method=None)
             
             # Verify collect_stats was called
             mock_beacon.collect_stats.assert_called_once()
@@ -33,8 +33,8 @@ def test_plan_distribution_weighted_shard_default():
             )
 
 
-def test_plan_distribution_weighted_shard_explicit():
-    """Test that plan_distribution calls plan_static_weighted_shards when method is 'weighted_shard'."""
+def test_calculate_data_distribution_weighted_shard_explicit():
+    """Test that calculate_data_distribution calls plan_static_weighted_shards when method is 'weighted_shard'."""
     mock_beacon = MagicMock()
     mock_stats_data = [
         {"host": "node1", "connection_status": "online"},
@@ -51,7 +51,7 @@ def test_plan_distribution_weighted_shard_explicit():
                 {"host": "node3", "allocated_samples": 1},
             ]
             
-            plan_distribution(method="weighted_shard")
+            calculate_data_distribution(method="weighted_shard")
             
             # Verify collect_stats was called
             mock_beacon.collect_stats.assert_called_once()
@@ -63,8 +63,8 @@ def test_plan_distribution_weighted_shard_explicit():
             )
 
 
-def test_plan_distribution_weighted_batches():
-    """Test that plan_distribution calls plan_dynamic_weighted_batches when method is 'weighted_batches'."""
+def test_calculate_data_distribution_weighted_batches():
+    """Test that calculate_data_distribution calls plan_dynamic_weighted_batches when method is 'weighted_batches'."""
     mock_beacon = MagicMock()
     mock_stats_data = [
         {"host": "node1", "connection_status": "online"},
@@ -83,7 +83,7 @@ def test_plan_distribution_weighted_batches():
                 {"host": "node4", "allocated_batches": 1},
             ]
             
-            plan_distribution(method="weighted_batches")
+            calculate_data_distribution(method="weighted_batches")
             
             # Verify collect_stats was called
             mock_beacon.collect_stats.assert_called_once()
@@ -95,14 +95,14 @@ def test_plan_distribution_weighted_batches():
             )
 
 
-def test_plan_distribution_no_stats_data():
-    """Test that plan_distribution handles empty stats data."""
+def test_calculate_data_distribution_no_stats_data():
+    """Test that calculate_data_distribution handles empty stats data."""
     mock_beacon = MagicMock()
     mock_beacon.collect_stats.return_value = []
     
     with patch("mosaic.mosaic._beacon", mock_beacon):
         with patch("mosaic.mosaic.plan_static_weighted_shards") as mock_plan_shards:
-            plan_distribution(method=None)
+            calculate_data_distribution(method=None)
             
             # Verify collect_stats was called
             mock_beacon.collect_stats.assert_called_once()
@@ -111,8 +111,8 @@ def test_plan_distribution_no_stats_data():
             mock_plan_shards.assert_not_called()
 
 
-def test_plan_distribution_invalid_method():
-    """Test that plan_distribution handles invalid method."""
+def test_calculate_data_distribution_invalid_method():
+    """Test that calculate_data_distribution handles invalid method."""
     mock_beacon = MagicMock()
     mock_stats_data = [{"host": "node1", "connection_status": "online"}]
     mock_beacon.collect_stats.return_value = mock_stats_data
@@ -120,7 +120,7 @@ def test_plan_distribution_invalid_method():
     with patch("mosaic.mosaic._beacon", mock_beacon):
         with patch("mosaic.mosaic.plan_static_weighted_shards") as mock_plan_shards:
             with patch("mosaic.mosaic.plan_dynamic_weighted_batches") as mock_plan_batches:
-                plan_distribution(method="invalid_method")
+                calculate_data_distribution(method="invalid_method")
                 
                 # Verify collect_stats was called
                 mock_beacon.collect_stats.assert_called_once()
@@ -130,11 +130,11 @@ def test_plan_distribution_invalid_method():
                 mock_plan_batches.assert_not_called()
 
 
-def test_plan_distribution_no_beacon():
-    """Test that plan_distribution handles missing beacon."""
+def test_calculate_data_distribution_no_beacon():
+    """Test that calculate_data_distribution handles missing beacon."""
     with patch("mosaic.mosaic._beacon", None):
         with patch("mosaic.mosaic.plan_static_weighted_shards") as mock_plan_shards:
-            plan_distribution(method=None)
+            calculate_data_distribution(method=None)
             
             # Verify planner function was not called
             mock_plan_shards.assert_not_called()

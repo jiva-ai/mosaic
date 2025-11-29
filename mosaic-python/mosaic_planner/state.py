@@ -76,7 +76,7 @@ class Plan:
     """Represents a distribution plan for a model and data."""
 
     stats_data: List[Dict[str, Any]]  # Result of beacon.collect_stats()
-    distribution_plan: List[Dict[str, Any]]  # Result of plan_distribution call
+    distribution_plan: List[Dict[str, Any]]  # Result of calculate_data_distribution call
     model: Model
     data: Data
 

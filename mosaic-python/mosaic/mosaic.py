@@ -104,9 +104,9 @@ def cmd_hb() -> None:
     cmd_rhb()
 
 
-def plan_distribution(method: Optional[str] = None) -> None:
+def calculate_data_distribution(method: Optional[str] = None) -> None:
     """
-    Plan distribution of data/workloads across peers.
+    Calculate distribution of data (and therefore workloads) across peers.
     
     Args:
         method: Distribution method - "weighted_shard" or "weighted_batches"
@@ -148,9 +148,9 @@ def plan_distribution(method: Optional[str] = None) -> None:
     return result
 
 
-def cmd_pland(method: Optional[str] = None) -> None:
-    """Plan distribution of data/workloads."""
-    plan_distribution(method)
+def cmd_calcd(method: Optional[str] = None) -> None:
+    """Calculate distribution of data/workloads."""
+    calculate_data_distribution(method)
 
 
 def cmd_help() -> None:
@@ -160,7 +160,7 @@ Available commands:
   shb                    - Show send heartbeat statuses
   rhb                    - Show receive heartbeat statuses
   hb                     - Show both send and receive heartbeat statuses
-  pland [method]         - Plan distribution (method: weighted_shard or weighted_batches)
+  calcd [method]         - Calculate distribution (method: weighted_shard or weighted_batches)
   help                   - Show this help message
   exit/quit/q            - Exit the REPL
 """
@@ -190,11 +190,6 @@ def interpret_command(command: str) -> None:
     cmd = parts[0].lower()
     args = parts[1:] if len(parts) > 1 else []
     
-    # Parse arguments for commands that need them
-    method = None
-    if cmd == "pland" and args:
-        method = args[0]
-    
     # Route to appropriate command handler
     if cmd == "shb":
         cmd_shb()
@@ -202,8 +197,8 @@ def interpret_command(command: str) -> None:
         cmd_rhb()
     elif cmd == "hb":
         cmd_hb()
-    elif cmd == "pland":
-        cmd_pland(method)
+    elif cmd == "calcd":
+        cmd_calcd(args[0] if args else None)
     elif cmd == "help":
         cmd_help()
     else:
