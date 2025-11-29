@@ -1,7 +1,11 @@
 """Utility functions for planning data and ML workload distribution."""
 
+import os
 import time
+from pathlib import Path
 from typing import Any, Dict, List, Optional
+
+from mosaic_planner.state import Data, DataType, FileDefinition, Model, Plan, Project
 
 # Constants for dynamic batch planning
 MAX_CPU_UTIL = 90.0
@@ -934,4 +938,529 @@ def plan_dynamic_weighted_batches(
         })
     
     return result
+
+
+def _segment_csv(
+    file_location: str,
+    total_rows: int,
+    fraction: float,
+    start_position: float = 0.0,
+    overlap: int = 0,
+) -> Dict[str, Any]:
+    """
+    Segment a CSV file by row ranges.
+    
+    Args:
+        file_location: Location of the CSV file
+        total_rows: Total number of rows in the CSV
+        fraction: Fraction of data to allocate (0.0 to 1.0)
+        start_position: Starting position as fraction (0.0 to 1.0) for cumulative distribution
+        overlap: Number of overlapping rows (default: 0)
+    
+    Returns:
+        Dictionary with segment information
+    """
+    if total_rows <= 0:
+        return {
+            "file_location": file_location,
+            "data_type": "csv",
+            "start_row": 0,
+            "end_row": 0,
+        }
+    
+    start_row = int(start_position * total_rows)
+    allocated_rows = max(1, int(total_rows * fraction))
+    end_row = min(start_row + allocated_rows, total_rows)
+    
+    return {
+        "file_location": file_location,
+        "data_type": "csv",
+        "start_row": start_row,
+        "end_row": end_row,
+        "total_rows": total_rows,
+        "fraction": fraction,
+    }
+
+
+def _segment_image(
+    file_location: str,
+    total_images: int,
+    fraction: float,
+    start_position: float = 0.0,
+    overlap: int = 0,
+) -> Dict[str, Any]:
+    """
+    Segment image data by selecting a subset of images.
+    
+    Args:
+        file_location: Location of the image file or directory
+        total_images: Total number of images
+        fraction: Fraction of data to allocate (0.0 to 1.0)
+        start_position: Starting position as fraction (0.0 to 1.0) for cumulative distribution
+        overlap: Number of overlapping images (default: 0)
+    
+    Returns:
+        Dictionary with segment information
+    """
+    if total_images <= 0:
+        return {
+            "file_location": file_location,
+            "data_type": "image",
+            "image_indices": [],
+        }
+    
+    start_idx = int(start_position * total_images)
+    allocated_count = max(1, int(total_images * fraction))
+    end_idx = min(start_idx + allocated_count, total_images)
+    image_indices = list(range(start_idx, end_idx))
+    
+    return {
+        "file_location": file_location,
+        "data_type": "image",
+        "image_indices": image_indices,
+        "total_images": total_images,
+        "fraction": fraction,
+    }
+
+
+def _segment_audio(
+    file_location: str,
+    total_files: int,
+    fraction: float,
+    start_position: float = 0.0,
+    overlap: int = 0,
+) -> Dict[str, Any]:
+    """
+    Segment audio data by selecting a subset of audio files.
+    
+    Args:
+        file_location: Location of the audio file or directory
+        total_files: Total number of audio files
+        fraction: Fraction of data to allocate (0.0 to 1.0)
+        start_position: Starting position as fraction (0.0 to 1.0) for cumulative distribution
+        overlap: Number of overlapping files (default: 0)
+    
+    Returns:
+        Dictionary with segment information
+    """
+    if total_files <= 0:
+        return {
+            "file_location": file_location,
+            "data_type": "audio",
+            "file_indices": [],
+        }
+    
+    start_idx = int(start_position * total_files)
+    allocated_count = max(1, int(total_files * fraction))
+    end_idx = min(start_idx + allocated_count, total_files)
+    file_indices = list(range(start_idx, end_idx))
+    
+    return {
+        "file_location": file_location,
+        "data_type": "audio",
+        "file_indices": file_indices,
+        "total_files": total_files,
+        "fraction": fraction,
+    }
+
+
+def _segment_text(
+    file_location: str,
+    total_chars: int,
+    fraction: float,
+    start_position: float = 0.0,
+    overlap: int = 0,
+) -> Dict[str, Any]:
+    """
+    Segment text data by character/byte ranges.
+    
+    Args:
+        file_location: Location of the text file
+        total_chars: Total number of characters/bytes
+        fraction: Fraction of data to allocate (0.0 to 1.0)
+        start_position: Starting position as fraction (0.0 to 1.0) for cumulative distribution
+        overlap: Number of overlapping characters (default: 0)
+    
+    Returns:
+        Dictionary with segment information
+    """
+    if total_chars <= 0:
+        return {
+            "file_location": file_location,
+            "data_type": "text",
+            "start_char": 0,
+            "end_char": 0,
+        }
+    
+    start_char = int(start_position * total_chars)
+    allocated_chars = max(1, int(total_chars * fraction))
+    end_char = min(start_char + allocated_chars, total_chars)
+    
+    return {
+        "file_location": file_location,
+        "data_type": "text",
+        "start_char": start_char,
+        "end_char": end_char,
+        "total_chars": total_chars,
+        "fraction": fraction,
+    }
+
+
+def _segment_graph(
+    file_location: str,
+    total_nodes: int,
+    fraction: float,
+    start_position: float = 0.0,
+    overlap: int = 0,
+) -> Dict[str, Any]:
+    """
+    Segment graph data by node ranges.
+    
+    Args:
+        file_location: Location of the graph file
+        total_nodes: Total number of nodes in the graph
+        fraction: Fraction of data to allocate (0.0 to 1.0)
+        start_position: Starting position as fraction (0.0 to 1.0) for cumulative distribution
+        overlap: Number of overlapping nodes (default: 0)
+    
+    Returns:
+        Dictionary with segment information
+    """
+    if total_nodes <= 0:
+        return {
+            "file_location": file_location,
+            "data_type": "graph",
+            "node_range": (0, 0),
+        }
+    
+    start_node = int(start_position * total_nodes)
+    allocated_nodes = max(1, int(total_nodes * fraction))
+    end_node = min(start_node + allocated_nodes, total_nodes)
+    
+    return {
+        "file_location": file_location,
+        "data_type": "graph",
+        "node_range": (start_node, end_node),
+        "total_nodes": total_nodes,
+        "fraction": fraction,
+    }
+
+
+def _segment_rl(
+    file_location: str,
+    total_episodes: int,
+    fraction: float,
+    start_position: float = 0.0,
+    overlap: int = 0,
+) -> Dict[str, Any]:
+    """
+    Segment RL data by episode ranges.
+    
+    Args:
+        file_location: Location of the RL data file
+        total_episodes: Total number of episodes
+        fraction: Fraction of data to allocate (0.0 to 1.0)
+        start_position: Starting position as fraction (0.0 to 1.0) for cumulative distribution
+        overlap: Number of overlapping episodes (default: 0)
+    
+    Returns:
+        Dictionary with segment information
+    """
+    if total_episodes <= 0:
+        return {
+            "file_location": file_location,
+            "data_type": "rl",
+            "episode_range": (0, 0),
+        }
+    
+    start_episode = int(start_position * total_episodes)
+    allocated_episodes = max(1, int(total_episodes * fraction))
+    end_episode = min(start_episode + allocated_episodes, total_episodes)
+    
+    return {
+        "file_location": file_location,
+        "data_type": "rl",
+        "episode_range": (start_episode, end_episode),
+        "total_episodes": total_episodes,
+        "fraction": fraction,
+    }
+
+
+def _segment_dir(
+    file_location: str,
+    total_files: int,
+    fraction: float,
+    start_position: float = 0.0,
+    overlap: int = 0,
+) -> Dict[str, Any]:
+    """
+    Segment directory data by selecting a subset of files.
+    
+    Args:
+        file_location: Location of the directory
+        total_files: Total number of files in the directory
+        fraction: Fraction of data to allocate (0.0 to 1.0)
+        start_position: Starting position as fraction (0.0 to 1.0) for cumulative distribution
+        overlap: Number of overlapping files (default: 0)
+    
+    Returns:
+        Dictionary with segment information
+    """
+    if total_files <= 0:
+        return {
+            "file_location": file_location,
+            "data_type": "dir",
+            "file_indices": [],
+        }
+    
+    start_idx = int(start_position * total_files)
+    allocated_count = max(1, int(total_files * fraction))
+    end_idx = min(start_idx + allocated_count, total_files)
+    file_indices = list(range(start_idx, end_idx))
+    
+    return {
+        "file_location": file_location,
+        "data_type": "dir",
+        "file_indices": file_indices,
+        "total_files": total_files,
+        "fraction": fraction,
+    }
+
+
+def _get_file_metadata(
+    file_def: FileDefinition,
+    data_folder: str,
+) -> Dict[str, Any]:
+    """
+    Get metadata about a file to determine segmentation parameters.
+    
+    This is a placeholder that would need to be implemented based on actual
+    data inspection. For now, returns default values.
+    
+    Args:
+        file_def: FileDefinition instance
+        data_folder: Base data folder path
+    
+    Returns:
+        Dictionary with metadata (total_rows, total_images, etc.)
+    """
+    full_path = Path(data_folder) / file_def.location
+    
+    # This is a simplified implementation
+    # In practice, you would need to actually read/inspect the data
+    metadata = {}
+    
+    if file_def.data_type == DataType.CSV:
+        # Would need to count rows in CSV
+        # For now, return a placeholder
+        metadata["total_rows"] = 1000  # Placeholder
+    elif file_def.data_type == DataType.IMAGE:
+        # Would need to count images in directory or file
+        metadata["total_images"] = 100  # Placeholder
+    elif file_def.data_type == DataType.AUDIO:
+        # Would need to count audio files
+        metadata["total_files"] = 50  # Placeholder
+    elif file_def.data_type == DataType.TEXT:
+        # Would need to get file size in characters
+        if full_path.exists():
+            metadata["total_chars"] = full_path.stat().st_size  # Approximate
+        else:
+            metadata["total_chars"] = 10000  # Placeholder
+    elif file_def.data_type == DataType.GRAPH:
+        # Would need to count nodes in graph
+        metadata["total_nodes"] = 1000  # Placeholder
+    elif file_def.data_type == DataType.RL:
+        # Would need to count episodes
+        metadata["total_episodes"] = 100  # Placeholder
+    elif file_def.data_type == DataType.DIR:
+        # Would need to count files in directory
+        if full_path.exists() and full_path.is_dir():
+            try:
+                metadata["total_files"] = len(list(full_path.iterdir()))
+            except (OSError, PermissionError):
+                metadata["total_files"] = 0
+        else:
+            metadata["total_files"] = 0
+    
+    return metadata
+
+
+def plan_data_distribution(
+    distribution_plan: List[Dict[str, Any]],
+    project: Project,
+    stats_data: List[Dict[str, Any]],
+    model: Model,
+    overlap: int = 0,
+) -> Plan:
+    """
+    Plan how to shard data across the Mosaic network based on machine capabilities.
+    
+    Uses the distribution plan (from calculate_data_distribution) to determine
+    how to segment data files across machines based on their capacity_fraction
+    and effective_score.
+    
+    Args:
+        distribution_plan: Result from calculate_data_distribution call
+        project: Project instance containing data to distribute
+        stats_data: Result from beacon.collect_stats()
+        model: Model instance for the plan
+        overlap: Overlap parameter for data segments (default: 0)
+    
+    Returns:
+        Plan object with data segmentation plan filled in
+    
+    Raises:
+        ValueError: If project.data is None
+    """
+    # Verify that the Data instance inside Project is not None
+    if project.data is None:
+        raise ValueError("Project data cannot be None. Data instance is required for planning.")
+    
+    if not project.data.file_definitions:
+        raise ValueError("Project data has no file definitions.")
+    
+    # Normalize fractions from distribution_plan
+    # Use capacity_fraction if available, otherwise compute from effective_score
+    total_effective = sum(
+        peer.get("capacity_fraction", 0.0) or 
+        peer.get("effective_score", 0.0) 
+        for peer in distribution_plan
+    )
+    
+    # If no capacity_fraction, compute from effective_score
+    if total_effective == 0.0:
+        total_effective = sum(peer.get("effective_score", 0.0) for peer in distribution_plan)
+        if total_effective > 0:
+            for peer in distribution_plan:
+                if "capacity_fraction" not in peer:
+                    peer["capacity_fraction"] = peer.get("effective_score", 0.0) / total_effective
+    
+    # Create machine list with fractions, sorted for cumulative distribution
+    machines: List[Dict[str, Any]] = []
+    for peer in distribution_plan:
+        host = peer.get("host", "")
+        comms_port = peer.get("comms_port", 0)
+        if host and comms_port > 0:
+            fraction = peer.get("capacity_fraction", 0.0)
+            if fraction > 0:
+                machines.append({
+                    "host": host,
+                    "comms_port": comms_port,
+                    "fraction": fraction,
+                })
+    
+    # Calculate cumulative start positions for each machine
+    cumulative = 0.0
+    for machine in machines:
+        machine["start_position"] = cumulative
+        cumulative += machine["fraction"]
+    
+    # Create segmentation plan for each machine
+    data_segmentation_plan: List[Dict[str, Any]] = []
+    
+    for machine in machines:
+        host = machine["host"]
+        comms_port = machine["comms_port"]
+        fraction = machine["fraction"]
+        start_position = machine["start_position"]
+        
+        machine_segments: List[Dict[str, Any]] = []
+        
+        for file_def in project.data.file_definitions:
+            # If not segmentable, entire file goes to this machine (or we skip segmentation)
+            if not file_def.is_segmentable:
+                # For non-segmentable files, we might need to copy to all machines
+                # or use a different strategy. For now, include in plan.
+                segment_info = {
+                    "file_location": file_def.location,
+                    "data_type": file_def.data_type.value,
+                    "is_segmentable": False,
+                    "copy_full_file": True,
+                }
+            else:
+                # Get metadata for segmentation
+                metadata = _get_file_metadata(file_def, project.config.data_location)
+                
+                # Segment based on data type
+                if file_def.data_type == DataType.CSV:
+                    segment_info = _segment_csv(
+                        file_def.location,
+                        metadata.get("total_rows", 0),
+                        fraction,
+                        start_position,
+                        overlap,
+                    )
+                elif file_def.data_type == DataType.IMAGE:
+                    segment_info = _segment_image(
+                        file_def.location,
+                        metadata.get("total_images", 0),
+                        fraction,
+                        start_position,
+                        overlap,
+                    )
+                elif file_def.data_type == DataType.AUDIO:
+                    segment_info = _segment_audio(
+                        file_def.location,
+                        metadata.get("total_files", 0),
+                        fraction,
+                        start_position,
+                        overlap,
+                    )
+                elif file_def.data_type == DataType.TEXT:
+                    segment_info = _segment_text(
+                        file_def.location,
+                        metadata.get("total_chars", 0),
+                        fraction,
+                        start_position,
+                        overlap,
+                    )
+                elif file_def.data_type == DataType.GRAPH:
+                    segment_info = _segment_graph(
+                        file_def.location,
+                        metadata.get("total_nodes", 0),
+                        fraction,
+                        start_position,
+                        overlap,
+                    )
+                elif file_def.data_type == DataType.RL:
+                    segment_info = _segment_rl(
+                        file_def.location,
+                        metadata.get("total_episodes", 0),
+                        fraction,
+                        start_position,
+                        overlap,
+                    )
+                elif file_def.data_type == DataType.DIR:
+                    segment_info = _segment_dir(
+                        file_def.location,
+                        metadata.get("total_files", 0),
+                        fraction,
+                        start_position,
+                        overlap,
+                    )
+                else:
+                    # Unknown data type, skip or use generic segmentation
+                    continue
+                
+                segment_info["is_segmentable"] = True
+            
+            machine_segments.append(segment_info)
+        
+        # Add machine entry to segmentation plan
+        data_segmentation_plan.append({
+            "host": host,
+            "comms_port": comms_port,
+            "fraction": fraction,
+            "segments": machine_segments,
+        })
+    
+    # Create and return Plan object
+    plan = Plan(
+        stats_data=stats_data,
+        distribution_plan=distribution_plan,
+        model=model,
+        data_segmentation_plan=data_segmentation_plan,
+    )
+    
+    return plan
 

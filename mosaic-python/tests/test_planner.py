@@ -11,7 +11,6 @@ from mosaic_planner import (
     plan_static_weighted_shards,
 )
 
-
 def test_eligibility_filter_online_only():
     """Test that only nodes with connection_status='online' are included."""
     current_time = int(time.time() * 1000)
@@ -1767,4 +1766,5 @@ def test_plan_dynamic_weighted_batches_remainder_allocation():
     allocations = [alloc["allocated_batches"] for alloc in result]
     assert sum(allocations) == 10
     assert all(alloc > 0 for alloc in allocations)
+
 

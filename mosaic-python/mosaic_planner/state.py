@@ -51,6 +51,7 @@ class FileDefinition:
 
     location: str  # Relative to MosaicConfig's data_folder
     data_type: DataType
+    is_segmentable: bool = True
     binary_data: Optional[bytes] = None  # Optional, filled in afterwards
 
 
@@ -78,7 +79,7 @@ class Plan:
     stats_data: List[Dict[str, Any]]  # Result of beacon.collect_stats()
     distribution_plan: List[Dict[str, Any]]  # Result of calculate_data_distribution call
     model: Model
-    data: Data
+    data_segmentation_plan: Optional[List[Dict[str, Any]]] = None  # Plan for data sharding across machines
 
 
 @dataclass
@@ -118,6 +119,7 @@ class Project:
 
     name: str  # No spaces allowed, used in commands
     config: MosaicConfig  # Mandatory
+    data: Optional["Data"] = None  # Data instance for the project
     plans: List[Plan] = field(default_factory=list)
     _creation_time: int = field(init=False, repr=False)
 
@@ -125,6 +127,7 @@ class Project:
         self,
         name: str,
         config: MosaicConfig,
+        data: Optional["Data"] = None,
         plans: Optional[List[Plan]] = None,
     ):
         """
@@ -133,6 +136,7 @@ class Project:
         Args:
             name: Project name (no spaces allowed)
             config: MosaicConfig instance (mandatory)
+            data: Optional Data instance for the project
             plans: Optional list of Plan instances. Defaults to None/empty list.
 
         Raises:
@@ -142,6 +146,7 @@ class Project:
             raise ValueError("Project name cannot contain spaces")
         self.name = name
         self.config = config
+        self.data = data
         self.plans = plans if plans is not None else []
         # Fix creation time as immutable, millis since epoch
         self._creation_time = int(time.time() * 1000)
