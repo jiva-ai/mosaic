@@ -18,6 +18,9 @@ packages = ["mosaic_comms", "mosaic_config", "mosaic", "mosaic_planner", "mosaic
 [tool.uv]
 dev-dependencies = [
     "pytest>=8.0.0",
+    "Pillow>=10.0.0",
+    "numpy>=1.24.0",
+    "soundfile>=0.12.0",
 ]
 
 [tool.uv.workspace]

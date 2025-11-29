@@ -53,3 +53,5 @@ htmlcov/
 .DS_Store
 Thumbs.db
 
+# Mosaic
+tests/test_data/
