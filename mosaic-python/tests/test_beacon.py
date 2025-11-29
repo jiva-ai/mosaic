@@ -954,15 +954,16 @@ class TestBeaconCollectStats:
                 )
                 beacon3._receive_heartbeat_statuses[("192.168.1.300", 8000)] = status3_peer
 
-                # Call collect_stats on beacon1
+                # Call collect_stats on beacon1 (include_self=True by default)
                 result = beacon1.collect_stats()
 
                 # Verify result is a list
                 assert isinstance(result, list), "collect_stats should return a list"
 
-                # Verify result contains stats from beacon2 and beacon3
+                # Verify result contains stats from beacon2, beacon3, and beacon1 (local)
                 # Each beacon's stats response contains their receive_heartbeat_statuses (1 entry each)
-                assert len(result) == 2, f"Expected 2 entries, got {len(result)}"
+                # Plus beacon1's local stats (1 entry)
+                assert len(result) == 3, f"Expected 3 entries (2 peers + 1 local), got {len(result)}"
 
                 # Verify the entries are dictionaries with the expected structure
                 for entry in result:
@@ -978,10 +979,19 @@ class TestBeaconCollectStats:
                 for entry in result:
                     assert entry.get("comms_port") != 0, "Result should not contain entries with comms_port=0"
 
-                # Verify we got the expected entries from beacon2 and beacon3
+                # Verify we got the expected entries from beacon2, beacon3, and beacon1 (local)
                 hosts_found = {entry.get("host") for entry in result}
                 assert "192.168.1.200" in hosts_found, "Should contain entry from beacon2"
                 assert "192.168.1.300" in hosts_found, "Should contain entry from beacon3"
+                assert config1.host in hosts_found, "Should contain local node entry"
+                
+                # Verify local node entry has correct structure
+                local_entry = next((e for e in result if e.get("host") == config1.host), None)
+                assert local_entry is not None, "Local node entry should be present"
+                assert local_entry.get("heartbeat_port") == config1.heartbeat_port
+                assert local_entry.get("comms_port") == config1.comms_port
+                assert local_entry.get("connection_status") == "online"
+                assert local_entry.get("stats_payload") is not None
 
             finally:
                 beacon2.stop()
@@ -1074,14 +1084,58 @@ class TestBeaconCollectStats:
                 beacon1._receive_heartbeat_statuses[key2] = status2
                 beacon1._receive_heartbeat_statuses[key3] = status3
 
-                # Call collect_stats on beacon1 with timeout=0
-                result = beacon1.collect_stats()
+                # Call collect_stats on beacon1 with timeout=0 and include_self=False
+                # With timeout=0, no peers will be queried, but include_self=False means no local stats either
+                result = beacon1.collect_stats(include_self=False)
 
-                # Verify result is empty (timeout should break immediately)
+                # Verify result is empty (timeout should break immediately, and include_self=False)
                 assert isinstance(result, list), "collect_stats should return a list"
-                assert len(result) == 0, f"Expected empty list due to timeout, got {len(result)} entries"
+                assert len(result) == 0, f"Expected empty list due to timeout and include_self=False, got {len(result)} entries"
+                
+                # Now test with include_self=True - should have local stats even with timeout=0
+                result_with_self = beacon1.collect_stats(include_self=True)
+                assert len(result_with_self) == 1, f"Expected 1 entry (local stats), got {len(result_with_self)} entries"
+                local_entry = result_with_self[0]
+                assert local_entry.get("host") == config1.host, "Should contain local node entry"
 
             finally:
                 beacon2.stop()
                 beacon3.stop()
+
+    def test_collect_stats_include_self_parameter(self, beacon_config_no_ssl):
+        """Test that collect_stats includes/excludes local node stats based on include_self parameter."""
+        with patch("mosaic_comms.beacon.StatsCollector") as mock_stats_class:
+            mock_stats = MagicMock()
+            mock_stats.get_last_stats_json.return_value = '{"cpu_percent": 45.3, "ram_percent": 60.0}'
+            mock_stats_class.return_value = mock_stats
+
+            beacon = Beacon(beacon_config_no_ssl)
+            beacon.start()
+
+            try:
+                # Wait for listener to start
+                time.sleep(0.5)
+
+                # Test with include_self=True (default)
+                result_with_self = beacon.collect_stats(include_self=True)
+                assert isinstance(result_with_self, list), "collect_stats should return a list"
+                assert len(result_with_self) == 1, f"Expected 1 entry (local stats), got {len(result_with_self)}"
+                
+                local_entry = result_with_self[0]
+                assert local_entry.get("host") == beacon_config_no_ssl.host
+                assert local_entry.get("heartbeat_port") == beacon_config_no_ssl.heartbeat_port
+                assert local_entry.get("comms_port") == beacon_config_no_ssl.comms_port
+                assert local_entry.get("connection_status") == "online"
+                assert local_entry.get("stats_payload") is not None
+                assert local_entry.get("stats_payload").get("cpu_percent") == 45.3
+                assert local_entry.get("stats_payload").get("ram_percent") == 60.0
+                assert "benchmark" in local_entry
+
+                # Test with include_self=False
+                result_without_self = beacon.collect_stats(include_self=False)
+                assert isinstance(result_without_self, list), "collect_stats should return a list"
+                assert len(result_without_self) == 0, f"Expected 0 entries (no peers, no local), got {len(result_without_self)}"
+
+            finally:
+                beacon.stop()
 

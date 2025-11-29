@@ -1030,15 +1030,18 @@ class Beacon:
             status_list.append(status_dict)
         return status_list
 
-    def collect_stats(self) -> List[Dict[str, Any]]:
+    def collect_stats(self, include_self: bool = True) -> List[Dict[str, Any]]:
         """
         Collect stats from all peers by sending stats commands.
 
         Iterates through all receive-heartbeat statuses and requests stats
         from each peer. Stops if the timeout is exceeded.
 
+        Args:
+            include_self: If True, append local node stats to the result (default: True)
+
         Returns:
-            List of stat dictionaries collected from peers
+            List of stat dictionaries collected from peers (and optionally local node)
         """
         start_time = int(time.time() * 1000)  # Current millis since epoch
         status_request_cache: List[Dict[str, Any]] = []
@@ -1078,6 +1081,36 @@ class Beacon:
             if (current_time - start_time) > (self.config.stats_request_timeout * 1000):
                 # Timeout exceeded, break out of loop
                 break
+
+        # Add local node stats if requested
+        if include_self:
+            try:
+                # Get local stats from stats_collector
+                stats_json = self.stats_collector.get_last_stats_json()
+                stats_payload = None
+                if stats_json:
+                    try:
+                        stats_payload = json.loads(stats_json)
+                    except json.JSONDecodeError:
+                        logger.warning("Failed to parse local stats JSON")
+                        stats_payload = {}
+
+                # Load benchmark data
+                benchmark_data = load_benchmarks(self.config.benchmark_data_location)
+
+                # Create local node stats entry
+                local_stats = {
+                    "host": self.config.host,
+                    "heartbeat_port": self.config.heartbeat_port,
+                    "comms_port": self.config.comms_port,
+                    "last_time_received": int(time.time() * 1000),
+                    "connection_status": "online",  # Local node is always "online"
+                    "stats_payload": stats_payload,
+                    "benchmark": benchmark_data,
+                }
+                status_request_cache.append(local_stats)
+            except Exception as e:
+                logger.error(f"Error adding local node stats: {e}")
 
         return status_request_cache
 
