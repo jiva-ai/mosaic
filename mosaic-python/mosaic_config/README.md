@@ -37,7 +37,7 @@ The configuration file must be valid JSON with the following structure:
 
 ```json
 {
-  "host": "localhost",
+  "host": "192.168.0.2",
   "heartbeat_port": 5000,
   "comms_port": 5001,
   "peers": [
