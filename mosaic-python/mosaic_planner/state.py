@@ -91,7 +91,7 @@ class Session:
     plan: Plan
     time_started: int = field(init=False)  # Millis since epoch
     time_ended: int = -1  # Millis since epoch, -1 means not finished
-    status: str = "idle"  # idle, running, error, complete
+    status: SessionStatus = SessionStatus.IDLE  # Session status
     id: str = field(init=False)  # Unique identifier
 
     def __init__(
@@ -99,7 +99,7 @@ class Session:
         plan: Plan,
         time_started: Optional[int] = None,
         time_ended: int = -1,
-        status: str = "idle",
+        status: SessionStatus = SessionStatus.IDLE,
         id: Optional[str] = None,
     ):
         """
@@ -109,7 +109,7 @@ class Session:
             plan: Plan instance
             time_started: Optional start time in millis since epoch. Defaults to current time.
             time_ended: End time in millis since epoch. Defaults to -1 (not finished).
-            status: Status string. Defaults to "idle".
+            status: Session status. Defaults to SessionStatus.IDLE.
             id: Optional unique identifier. If not provided, generates a new UUID.
         """
         self.plan = plan

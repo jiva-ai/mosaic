@@ -6,7 +6,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from mosaic.mosaic import calculate_data_distribution
-from mosaic_planner.state import Model, ModelType, Plan, Session
+from mosaic_planner.state import Model, ModelType, Plan, Session, SessionStatus
 
 
 def test_calculate_data_distribution_weighted_shard_default():
@@ -204,8 +204,8 @@ class TestMosaicCommandHandlers:
             model=model,
         )
 
-        session1 = Session(plan=plan1, status="running")
-        session2 = Session(plan=plan2, status="complete")
+        session1 = Session(plan=plan1, status=SessionStatus.RUNNING)
+        session2 = Session(plan=plan2, status=SessionStatus.COMPLETE)
 
         # Set up global sessions list
         with patch("mosaic.mosaic._sessions", [session1, session2]):
@@ -324,7 +324,7 @@ class TestMosaicCommandHandlers:
             distribution_plan=[{"host": "node1", "allocated_samples": 10}],
             model=model,
         )
-        session1 = Session(plan=plan1, status="running")
+        session1 = Session(plan=plan1, status=SessionStatus.RUNNING)
 
         with patch("mosaic_comms.beacon.StatsCollector") as mock_stats_class:
             mock_stats = MagicMock()
@@ -474,8 +474,8 @@ class TestPlanAndSessionIDs:
             distribution_plan=[{"host": "node1", "allocated_samples": 10}],
             model=model,
         )
-        session1 = Session(plan=plan, status="running")
-        session2 = Session(plan=plan, status="complete")
+        session1 = Session(plan=plan, status=SessionStatus.RUNNING)
+        session2 = Session(plan=plan, status=SessionStatus.COMPLETE)
         
         # Verify IDs are set
         assert hasattr(session1, 'id'), "Session should have 'id' attribute"
@@ -519,7 +519,7 @@ class TestPlanAndSessionIDs:
             model=model,
         )
         custom_id = "custom-session-id-456"
-        session = Session(plan=plan, status="running", id=custom_id)
+        session = Session(plan=plan, status=SessionStatus.RUNNING, id=custom_id)
         
         assert session.id == custom_id, "Session ID should be set to custom value"
 

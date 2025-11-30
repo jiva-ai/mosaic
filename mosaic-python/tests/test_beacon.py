@@ -1620,3 +1620,485 @@ class TestBeaconCollectStats:
                 if receiver_dir.exists():
                     shutil.rmtree(receiver_dir)
 
+    def test_large_directory_transfer_three_beacons(self, temp_state_dir):
+        """Test transferring a directory from beacon1 to beacon2 and beacon3 with chunking."""
+        import time
+        import random
+        import shutil
+        from pathlib import Path
+        from mosaic_planner.planner import get_directory_size
+        from mosaic_planner.state import Data, DataType, FileDefinition, Model, Plan
+        
+        # Set up test_data directory
+        test_data_dir = Path(__file__).parent / 'test_data'
+        test_data_dir.mkdir(exist_ok=True)
+        
+        # Create source directory name
+        source_dir_name = "large_test_dir_three_beacons"
+        source_dir = test_data_dir / source_dir_name
+        
+        # Check if directory exists, if not create it
+        if not source_dir.exists():
+            source_dir.mkdir(exist_ok=True)
+            
+            # Create files of varying sizes with random bytes (don't compress well)
+            # Create a larger directory to ensure chunking even after compression
+            file_sizes = [
+                (20 * 1024 * 1024, "file_20mb.bin"),  # 20MB file
+                (15 * 1024 * 1024, "file_15mb.bin"),  # 15MB file
+                (10 * 1024 * 1024, "file_10mb.bin"),  # 10MB file
+                (5 * 1024 * 1024, "file_5mb.bin"),     # 5MB file
+                (2 * 1024 * 1024, "file_2mb.bin"),     # 2MB file
+                (512 * 1024, "file_512kb.bin"),        # 512KB file
+            ]
+            
+            # Generate random binary data (doesn't compress well)
+            # Use a fixed seed for reproducibility so files can be compared byte-for-byte
+            random.seed(42)
+            chunk_size = 1024 * 1024  # Write in 1MB chunks
+            
+            for size_bytes, filename in file_sizes:
+                file_path = source_dir / filename
+                with open(file_path, 'wb') as f:
+                    written = 0
+                    while written < size_bytes:
+                        bytes_to_write = min(chunk_size, size_bytes - written)
+                        # Generate random bytes
+                        random_data = bytes([random.randint(0, 255) for _ in range(bytes_to_write)])
+                        f.write(random_data)
+                        written += bytes_to_write
+        
+        # Verify directory exists and has files
+        total_size = get_directory_size(source_dir)
+        assert total_size > 0, "Source directory should contain files"
+        
+        # Count original files
+        original_files = list(source_dir.rglob('*'))
+        original_files = [f for f in original_files if f.is_file()]
+        original_file_count = len(original_files)
+        assert original_file_count > 0, "Source directory should contain at least one file"
+        
+        # Set up receiver directories (different locations for each receiver)
+        receiver2_dir_name = "large_test_dir_received_beacon2"
+        receiver2_dir = test_data_dir / receiver2_dir_name
+        receiver3_dir_name = "large_test_dir_received_beacon3"
+        receiver3_dir = test_data_dir / receiver3_dir_name
+        
+        # Clean up receiver directories
+        if receiver2_dir.exists():
+            shutil.rmtree(receiver2_dir)
+        if receiver3_dir.exists():
+            shutil.rmtree(receiver3_dir)
+        
+        # Create configs for 3 beacons
+        # Use 2MB chunk size to force chunking
+        chunk_size_mb = 2
+        
+        # Beacon1 (sender)
+        beacon1_config = create_test_config_with_state(
+            state_dir=temp_state_dir / "beacon1",
+            host="127.0.0.1",
+            heartbeat_port=7000,
+            comms_port=7001,
+            heartbeat_frequency=2,
+            heartbeat_tolerance=5,
+            heartbeat_wait_timeout=2,
+            stats_request_timeout=10,
+            server_crt="",
+            server_key="",
+            ca_crt="",
+            benchmark_data_location="",
+            data_location=str(test_data_dir),
+            data_chunk_size=chunk_size_mb,
+        )
+        
+        # Beacon2 (receiver 1 - gets 60% of data)
+        beacon2_config = create_test_config_with_state(
+            state_dir=temp_state_dir / "beacon2",
+            host="127.0.0.1",
+            heartbeat_port=7002,
+            comms_port=7003,
+            heartbeat_frequency=2,
+            heartbeat_tolerance=5,
+            heartbeat_wait_timeout=2,
+            stats_request_timeout=10,
+            server_crt="",
+            server_key="",
+            ca_crt="",
+            benchmark_data_location="",
+            data_location=str(test_data_dir),
+            data_chunk_size=chunk_size_mb,
+        )
+        
+        # Beacon3 (receiver 2 - gets 40% of data)
+        beacon3_config = create_test_config_with_state(
+            state_dir=temp_state_dir / "beacon3",
+            host="127.0.0.1",
+            heartbeat_port=7004,
+            comms_port=7005,
+            heartbeat_frequency=2,
+            heartbeat_tolerance=5,
+            heartbeat_wait_timeout=2,
+            stats_request_timeout=10,
+            server_crt="",
+            server_key="",
+            ca_crt="",
+            benchmark_data_location="",
+            data_location=str(test_data_dir),
+            data_chunk_size=chunk_size_mb,
+        )
+        
+        with patch("mosaic_comms.beacon.StatsCollector") as mock_stats_class:
+            mock_stats = MagicMock()
+            mock_stats.get_last_stats_json.return_value = '{"cpu_percent": 45.3}'
+            mock_stats_class.return_value = mock_stats
+            
+            # Create beacons
+            beacon1 = Beacon(beacon1_config)
+            beacon2 = Beacon(beacon2_config)
+            beacon3 = Beacon(beacon3_config)
+            
+            beacon1.start()
+            beacon2.start()
+            beacon3.start()
+            
+            try:
+                # Wait for beacons to start
+                time.sleep(1.0)
+                
+                # Split files between beacon2 (60%) and beacon3 (40%)
+                # Files are sorted by name for consistent indexing
+                files_sorted = sorted(original_files, key=lambda f: f.name)
+                total_files = len(files_sorted)
+                split_index = int(total_files * 0.6)
+                beacon2_file_indices = list(range(0, split_index))
+                beacon3_file_indices = list(range(split_index, total_files))
+                
+                beacon2_files = [files_sorted[i] for i in beacon2_file_indices]
+                beacon3_files = [files_sorted[i] for i in beacon3_file_indices]
+                
+                # Create Plan with data_segmentation_plan for both receivers
+                # Use segmentable directory with file_indices
+                model = Model(name="test_model")
+                plan = Plan(
+                    stats_data=[],
+                    distribution_plan=[],
+                    model=model,
+                    data_segmentation_plan=[
+                        {
+                            "host": beacon2_config.host,
+                            "comms_port": beacon2_config.comms_port,
+                            "fraction": 0.6,
+                            "segments": [
+                                {
+                                    "file_location": source_dir_name,
+                                    "data_type": "dir",
+                                    "is_segmentable": True,
+                                    "file_indices": beacon2_file_indices,
+                                    "total_files": total_files,
+                                    "fraction": 0.6,
+                                },
+                            ],
+                        },
+                        {
+                            "host": beacon3_config.host,
+                            "comms_port": beacon3_config.comms_port,
+                            "fraction": 0.4,
+                            "segments": [
+                                {
+                                    "file_location": source_dir_name,
+                                    "data_type": "dir",
+                                    "is_segmentable": True,
+                                    "file_indices": beacon3_file_indices,
+                                    "total_files": total_files,
+                                    "fraction": 0.4,
+                                },
+                            ],
+                        },
+                    ],
+                )
+                
+                # Create Data with single directory definition (segmentable)
+                file_def = FileDefinition(
+                    location=source_dir_name,
+                    data_type=DataType.DIR,
+                    is_segmentable=True,  # Make segmentable to split files
+                )
+                data = Data(file_definitions=[file_def])
+                
+                # Patch handlers to extract to unique locations and copy files
+                # Use unique extraction directories to avoid conflicts
+                extracted_dir_beacon2 = test_data_dir / f"{source_dir_name}_beacon2"
+                extracted_dir_beacon3 = test_data_dir / f"{source_dir_name}_beacon3"
+                
+                # Patch beacon2 handler to extract to unique location
+                original_handler2 = beacon2._handle_execute_data_plan
+                def patched_handler2(payload):
+                    # Modify the handler to extract to unique location
+                    # We need to intercept and modify the extraction path
+                    from mosaic_planner.planner import deserialize_plan_with_data
+                    from mosaic_planner.state import Data
+                    from pathlib import Path
+                    import uuid
+                    from mosaic_planner.planner import unzip_stream_memory_safe
+                    
+                    # Deserialize to get the data
+                    plan, data = deserialize_plan_with_data(payload, compressed=True)
+                    
+                    # Process each file definition, extracting to unique location
+                    temp_dir = Path(beacon2_config.data_location) / "temp_received"
+                    temp_dir.mkdir(parents=True, exist_ok=True)
+                    
+                    for file_def in data.file_definitions:
+                        if file_def.binary_data:
+                            chunk_file = temp_dir / f"{uuid.uuid4()}.zip"
+                            with open(chunk_file, 'wb') as f:
+                                f.write(file_def.binary_data)
+                            
+                            # Extract to unique location for beacon2
+                            extract_to = extracted_dir_beacon2
+                            extract_to.parent.mkdir(parents=True, exist_ok=True)
+                            unzip_stream_memory_safe(chunk_file, extract_to)
+                            chunk_file.unlink()
+                    
+                    # Copy to receiver directory
+                    if extracted_dir_beacon2.exists():
+                        if receiver2_dir.exists():
+                            shutil.rmtree(receiver2_dir)
+                        shutil.copytree(extracted_dir_beacon2, receiver2_dir)
+                    
+                    return {"status": "success", "message": f"Received and processed {len(data.file_definitions)} file definitions", "file_count": len(data.file_definitions)}
+                
+                beacon2._handle_execute_data_plan = patched_handler2
+                beacon2.register("exdplan", patched_handler2)
+                
+                # Patch beacon2 finalize handler
+                original_finalize_handler2 = beacon2._handle_execute_data_plan_finalize
+                def patched_finalize_handler2(payload):
+                    from mosaic_planner.planner import deserialize_plan_with_data
+                    from pathlib import Path
+                    import uuid
+                    from mosaic_planner.planner import unzip_stream_memory_safe
+                    
+                    chunk_id = payload.get("chunk_id")
+                    temp_dir = Path(beacon2_config.data_location) / "temp_chunks"
+                    chunk_file = temp_dir / f"{chunk_id}.part"
+                    
+                    with open(chunk_file, 'rb') as f:
+                        complete_data = f.read()
+                    
+                    plan, data = deserialize_plan_with_data(complete_data, compressed=True)
+                    
+                    extract_temp_dir = Path(beacon2_config.data_location) / "temp_received"
+                    extract_temp_dir.mkdir(parents=True, exist_ok=True)
+                    
+                    for file_def in data.file_definitions:
+                        if file_def.binary_data:
+                            temp_zip = extract_temp_dir / f"{uuid.uuid4()}.zip"
+                            with open(temp_zip, 'wb') as f:
+                                f.write(file_def.binary_data)
+                            
+                            extract_to = extracted_dir_beacon2
+                            extract_to.parent.mkdir(parents=True, exist_ok=True)
+                            unzip_stream_memory_safe(temp_zip, extract_to)
+                            temp_zip.unlink()
+                    
+                    chunk_file.unlink()
+                    if chunk_id in beacon2._chunk_storage:
+                        del beacon2._chunk_storage[chunk_id]
+                    
+                    # Copy to receiver directory
+                    if extracted_dir_beacon2.exists():
+                        if receiver2_dir.exists():
+                            shutil.rmtree(receiver2_dir)
+                        shutil.copytree(extracted_dir_beacon2, receiver2_dir)
+                    
+                    return {"status": "success", "message": f"Finalized and processed {len(data.file_definitions)} file definitions", "file_count": len(data.file_definitions)}
+                
+                beacon2._handle_execute_data_plan_finalize = patched_finalize_handler2
+                beacon2.register("exdplan_finalize", patched_finalize_handler2)
+                
+                # Patch beacon3 handler to extract to unique location
+                original_handler3 = beacon3._handle_execute_data_plan
+                def patched_handler3(payload):
+                    from mosaic_planner.planner import deserialize_plan_with_data
+                    from pathlib import Path
+                    import uuid
+                    from mosaic_planner.planner import unzip_stream_memory_safe
+                    
+                    plan, data = deserialize_plan_with_data(payload, compressed=True)
+                    
+                    temp_dir = Path(beacon3_config.data_location) / "temp_received"
+                    temp_dir.mkdir(parents=True, exist_ok=True)
+                    
+                    for file_def in data.file_definitions:
+                        if file_def.binary_data:
+                            chunk_file = temp_dir / f"{uuid.uuid4()}.zip"
+                            with open(chunk_file, 'wb') as f:
+                                f.write(file_def.binary_data)
+                            
+                            # Extract to unique location for beacon3
+                            extract_to = extracted_dir_beacon3
+                            extract_to.parent.mkdir(parents=True, exist_ok=True)
+                            unzip_stream_memory_safe(chunk_file, extract_to)
+                            chunk_file.unlink()
+                    
+                    # Copy to receiver directory
+                    if extracted_dir_beacon3.exists():
+                        if receiver3_dir.exists():
+                            shutil.rmtree(receiver3_dir)
+                        shutil.copytree(extracted_dir_beacon3, receiver3_dir)
+                    
+                    return {"status": "success", "message": f"Received and processed {len(data.file_definitions)} file definitions", "file_count": len(data.file_definitions)}
+                
+                beacon3._handle_execute_data_plan = patched_handler3
+                beacon3.register("exdplan", patched_handler3)
+                
+                # Patch beacon3 finalize handler
+                original_finalize_handler3 = beacon3._handle_execute_data_plan_finalize
+                def patched_finalize_handler3(payload):
+                    from mosaic_planner.planner import deserialize_plan_with_data
+                    from pathlib import Path
+                    import uuid
+                    from mosaic_planner.planner import unzip_stream_memory_safe
+                    
+                    chunk_id = payload.get("chunk_id")
+                    temp_dir = Path(beacon3_config.data_location) / "temp_chunks"
+                    chunk_file = temp_dir / f"{chunk_id}.part"
+                    
+                    with open(chunk_file, 'rb') as f:
+                        complete_data = f.read()
+                    
+                    plan, data = deserialize_plan_with_data(complete_data, compressed=True)
+                    
+                    extract_temp_dir = Path(beacon3_config.data_location) / "temp_received"
+                    extract_temp_dir.mkdir(parents=True, exist_ok=True)
+                    
+                    for file_def in data.file_definitions:
+                        if file_def.binary_data:
+                            temp_zip = extract_temp_dir / f"{uuid.uuid4()}.zip"
+                            with open(temp_zip, 'wb') as f:
+                                f.write(file_def.binary_data)
+                            
+                            extract_to = extracted_dir_beacon3
+                            extract_to.parent.mkdir(parents=True, exist_ok=True)
+                            unzip_stream_memory_safe(temp_zip, extract_to)
+                            temp_zip.unlink()
+                    
+                    chunk_file.unlink()
+                    if chunk_id in beacon3._chunk_storage:
+                        del beacon3._chunk_storage[chunk_id]
+                    
+                    # Copy to receiver directory
+                    if extracted_dir_beacon3.exists():
+                        if receiver3_dir.exists():
+                            shutil.rmtree(receiver3_dir)
+                        shutil.copytree(extracted_dir_beacon3, receiver3_dir)
+                    
+                    return {"status": "success", "message": f"Finalized and processed {len(data.file_definitions)} file definitions", "file_count": len(data.file_definitions)}
+                
+                beacon3._handle_execute_data_plan_finalize = patched_finalize_handler3
+                beacon3.register("exdplan_finalize", patched_finalize_handler3)
+                
+                # Track chunk sizes sent (mock send_command to capture chunk sizes)
+                chunk_sizes_sent = []
+                original_send_command = beacon1.send_command
+                
+                def track_send_command(host, port, command, payload, timeout=30.0):
+                    if command == "exdplan_chunk":
+                        if isinstance(payload, bytes):
+                            header_length = int.from_bytes(payload[:4], byteorder="big")
+                            chunk_data = payload[4 + header_length:]
+                            chunk_sizes_sent.append(len(chunk_data))
+                    elif command == "exdplan":
+                        if isinstance(payload, bytes):
+                            chunk_sizes_sent.append(len(payload))
+                    return original_send_command(host, port, command, payload, timeout)
+                
+                beacon1.send_command = track_send_command
+                
+                # Execute data plan - track transmission time
+                transmission_start = time.time()
+                beacon1.execute_data_plan(plan, data)
+                transmission_end = time.time()
+                transmission_duration = transmission_end - transmission_start
+                
+                # Calculate total transmission time
+                total_transmission_time = transmission_duration
+                print(f"Data plan execution and transmission completed in {total_transmission_time:.2f} seconds")
+                
+                # Calculate total data size sent
+                total_data_sent = sum(chunk_sizes_sent)
+                
+                # Verify chunks were created correctly
+                chunk_size_bytes = beacon1_config.data_chunk_size * 1024 * 1024
+                for chunk_size in chunk_sizes_sent:
+                    assert chunk_size <= chunk_size_bytes, f"Chunk size {chunk_size / 1024 / 1024:.2f}MB exceeds data_chunk_size {chunk_size_mb}MB"
+                
+                # Verify chunks were sent
+                assert len(chunk_sizes_sent) > 0, "At least one chunk should have been sent"
+                
+                # Verify chunking works (similar to 2-beacon test)
+                if total_data_sent > chunk_size_bytes:
+                    assert len(chunk_sizes_sent) > 1, f"Expected multiple chunks for {total_data_sent / 1024 / 1024:.2f}MB data with {chunk_size_mb}MB chunk size, got {len(chunk_sizes_sent)} chunks"
+                else:
+                    assert len(chunk_sizes_sent) == 1, f"Expected single chunk for {total_data_sent / 1024 / 1024:.2f}MB compressed data, got {len(chunk_sizes_sent)} chunks"
+                
+                # Verify memory protection
+                max_chunk_size = max(chunk_sizes_sent) if chunk_sizes_sent else 0
+                assert max_chunk_size <= chunk_size_bytes, f"Largest chunk {max_chunk_size / 1024 / 1024:.2f}MB exceeds data_chunk_size {chunk_size_mb}MB"
+                
+                # Verify receiver directories exist
+                assert receiver2_dir.exists(), "Beacon2 receiver directory should exist"
+                assert receiver3_dir.exists(), "Beacon3 receiver directory should exist"
+                
+                # List files in receiver directories
+                received_files_beacon2 = list(receiver2_dir.rglob('*'))
+                received_files_beacon2 = [f for f in received_files_beacon2 if f.is_file()]
+                received_files_beacon3 = list(receiver3_dir.rglob('*'))
+                received_files_beacon3 = [f for f in received_files_beacon3 if f.is_file()]
+                
+                # Verify file counts match expected distribution
+                assert len(received_files_beacon2) == len(beacon2_files), f"Beacon2: Expected {len(beacon2_files)} files, got {len(received_files_beacon2)}"
+                assert len(received_files_beacon3) == len(beacon3_files), f"Beacon3: Expected {len(beacon3_files)} files, got {len(received_files_beacon3)}"
+                assert len(received_files_beacon2) + len(received_files_beacon3) == original_file_count, "Total received files should match original"
+                
+                # Verify byte-for-byte equality for beacon2 files
+                for original_file in beacon2_files:
+                    rel_path = original_file.relative_to(source_dir)
+                    received_file = receiver2_dir / rel_path
+                    assert received_file.exists(), f"Beacon2: File {rel_path} not found"
+                    
+                    with open(original_file, 'rb') as f1, open(received_file, 'rb') as f2:
+                        original_data = f1.read()
+                        received_data = f2.read()
+                        assert original_data == received_data, f"Beacon2: File {rel_path} content does not match"
+                        assert len(original_data) == len(received_data), f"Beacon2: File {rel_path} size does not match"
+                
+                # Verify byte-for-byte equality for beacon3 files
+                for original_file in beacon3_files:
+                    rel_path = original_file.relative_to(source_dir)
+                    received_file = receiver3_dir / rel_path
+                    assert received_file.exists(), f"Beacon3: File {rel_path} not found"
+                    
+                    with open(original_file, 'rb') as f1, open(received_file, 'rb') as f2:
+                        original_data = f1.read()
+                        received_data = f2.read()
+                        assert original_data == received_data, f"Beacon3: File {rel_path} content does not match"
+                        assert len(original_data) == len(received_data), f"Beacon3: File {rel_path} size does not match"
+                
+            finally:
+                beacon1.stop()
+                beacon2.stop()
+                beacon3.stop()
+                
+                # Clean up receiver directories and unique extraction directories
+                if receiver2_dir.exists():
+                    shutil.rmtree(receiver2_dir)
+                if receiver3_dir.exists():
+                    shutil.rmtree(receiver3_dir)
+                if extracted_dir_beacon2.exists():
+                    shutil.rmtree(extracted_dir_beacon2)
+                if extracted_dir_beacon3.exists():
+                    shutil.rmtree(extracted_dir_beacon3)
+
