@@ -1152,3 +1152,196 @@ class TestBeaconCollectStats:
             finally:
                 beacon.stop()
 
+    def test_handle_execute_data_plan_chunk(self, temp_state_dir):
+        """Test that _handle_execute_data_plan_chunk correctly writes chunks and interprets headers."""
+        import pickle
+        import uuid
+        from pathlib import Path
+        
+        # Set up test_data directory as data_location
+        test_data_dir = Path(__file__).parent / 'test_data'
+        test_data_dir.mkdir(exist_ok=True)
+        
+        config = create_test_config_with_state(
+            state_dir=temp_state_dir,
+            host="127.0.0.1",
+            heartbeat_port=5000,
+            comms_port=5001,
+            heartbeat_frequency=2,
+            heartbeat_tolerance=5,
+            heartbeat_wait_timeout=2,
+            stats_request_timeout=10,
+            server_crt="",
+            server_key="",
+            ca_crt="",
+            benchmark_data_location="",
+            data_location=str(test_data_dir),
+        )
+        
+        with patch("mosaic_comms.beacon.StatsCollector") as mock_stats_class:
+            mock_stats = MagicMock()
+            mock_stats.get_last_stats_json.return_value = '{"cpu_percent": 45.3}'
+            mock_stats_class.return_value = mock_stats
+            
+            beacon = Beacon(config)
+            
+            # Create test chunk data
+            chunk_id = str(uuid.uuid4())
+            chunk_index = 0
+            total_chunks = 2
+            chunk_data = b"test chunk data content"
+            
+            # Create header
+            chunk_header = {
+                "chunk_id": chunk_id,
+                "chunk_index": chunk_index,
+                "total_chunks": total_chunks,
+            }
+            header_bytes = pickle.dumps(chunk_header)
+            header_length = len(header_bytes).to_bytes(4, byteorder="big")
+            
+            # Create payload: header_length + header + chunk_data
+            payload = header_length + header_bytes + chunk_data
+            
+            # Call handler
+            result = beacon._handle_execute_data_plan_chunk(payload)
+            
+            # Verify result
+            assert result is not None
+            assert result["status"] == "success"
+            assert result["chunk_index"] == chunk_index
+            assert "Received chunk 1/2" in result["message"]
+            
+            # Verify chunk was written to disk
+            chunk_file = test_data_dir / "temp_chunks" / f"{chunk_id}.part"
+            assert chunk_file.exists(), "Chunk file should exist"
+            
+            # Verify chunk content
+            with open(chunk_file, 'rb') as f:
+                saved_data = f.read()
+            assert saved_data == chunk_data, "Chunk data should match"
+            
+            # Verify chunk storage was updated
+            assert chunk_id in beacon._chunk_storage
+            assert beacon._chunk_storage[chunk_id]["total_chunks"] == total_chunks
+            assert beacon._chunk_storage[chunk_id]["chunks_received"] == 1
+            
+            # Clean up
+            chunk_file.unlink()
+            (test_data_dir / "temp_chunks").rmdir()
+
+    def test_handle_execute_data_plan_finalize(self, temp_state_dir):
+        """Test that _handle_execute_data_plan_finalize correctly coalesces 2 chunks together."""
+        import pickle
+        import uuid
+        from pathlib import Path
+        from mosaic_planner.planner import save_chunk_to_disk, serialize_plan_with_data
+        from mosaic_planner.state import Data, FileDefinition, DataType, Model, Plan
+        
+        # Set up test_data directory as data_location
+        test_data_dir = Path(__file__).parent / 'test_data'
+        test_data_dir.mkdir(exist_ok=True)
+        
+        config = create_test_config_with_state(
+            state_dir=temp_state_dir,
+            host="127.0.0.1",
+            heartbeat_port=5000,
+            comms_port=5001,
+            heartbeat_frequency=2,
+            heartbeat_tolerance=5,
+            heartbeat_wait_timeout=2,
+            stats_request_timeout=10,
+            server_crt="",
+            server_key="",
+            ca_crt="",
+            benchmark_data_location="",
+            data_location=str(test_data_dir),
+        )
+        
+        with patch("mosaic_comms.beacon.StatsCollector") as mock_stats_class:
+            mock_stats = MagicMock()
+            mock_stats.get_last_stats_json.return_value = '{"cpu_percent": 45.3}'
+            mock_stats_class.return_value = mock_stats
+            
+            beacon = Beacon(config)
+            
+            # Create test plan and data
+            import zipfile
+            from io import BytesIO
+            
+            model = Model(name="test_model")
+            plan = Plan(
+                stats_data=[],
+                distribution_plan=[],
+                model=model,
+            )
+            
+            # Create a valid zip file for binary_data
+            zip_buffer = BytesIO()
+            with zipfile.ZipFile(zip_buffer, 'w', zipfile.ZIP_DEFLATED) as zip_file:
+                zip_file.writestr('test_file.csv', 'col1,col2\nval1,val2\n')
+            zip_data = zip_buffer.getvalue()
+            
+            file_def = FileDefinition(
+                location="test_file",
+                data_type=DataType.CSV,
+                is_segmentable=True,
+                binary_data=zip_data,
+            )
+            data = Data(file_definitions=[file_def])
+            
+            # Serialize plan and data
+            serialized_data = serialize_plan_with_data(plan, data, compress=True)
+            
+            # Split into 2 chunks
+            chunk_id = str(uuid.uuid4())
+            chunk_size = len(serialized_data) // 2 + 1  # Ensure we get 2 chunks
+            chunk1_data = serialized_data[:chunk_size]
+            chunk2_data = serialized_data[chunk_size:]
+            
+            # Save chunks to disk manually (simulating what chunk handler does)
+            temp_chunks_dir = test_data_dir / "temp_chunks"
+            temp_chunks_dir.mkdir(parents=True, exist_ok=True)
+            chunk_file = temp_chunks_dir / f"{chunk_id}.part"
+            
+            # Write first chunk
+            save_chunk_to_disk(chunk1_data, chunk_file, is_first_chunk=True)
+            
+            # Write second chunk (append)
+            save_chunk_to_disk(chunk2_data, chunk_file, is_first_chunk=False)
+            
+            # Verify chunks were written correctly
+            with open(chunk_file, 'rb') as f:
+                combined_data = f.read()
+            assert combined_data == serialized_data, "Combined chunks should equal original data"
+            
+            # Set up chunk storage
+            beacon._chunk_storage[chunk_id] = {
+                "total_chunks": 2,
+                "chunks_received": 2,
+            }
+            
+            # Call finalize handler
+            result = beacon._handle_execute_data_plan_finalize({"chunk_id": chunk_id})
+            
+            # Verify result
+            assert result is not None
+            assert result["status"] == "success"
+            assert result["file_count"] == 1
+            assert "Finalized and processed 1 file definitions" in result["message"]
+            
+            # Verify chunks were coalesced correctly
+            # The handler should have read the complete file and deserialized it
+            # We can't directly verify the deserialized content, but we can verify
+            # that the chunk file was processed and cleaned up
+            assert chunk_id not in beacon._chunk_storage, "Chunk storage should be cleaned up"
+            
+            # Verify temp directories are cleaned up (or at least chunk file is gone)
+            assert not chunk_file.exists(), "Chunk file should be cleaned up"
+            
+            # Clean up any remaining temp directories
+            try:
+                temp_chunks_dir.rmdir()
+            except OSError:
+                pass
+

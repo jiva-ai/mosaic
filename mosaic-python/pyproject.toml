@@ -6,6 +6,7 @@ requires-python = ">=3.11"
 readme = "README.md"
 dependencies = [
     "psutil>=5.9.0",
+    "stream-unzip>=0.0.60",
 ]
 
 [build-system]

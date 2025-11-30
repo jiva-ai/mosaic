@@ -7,6 +7,7 @@ import socket
 import ssl
 import threading
 import time
+import uuid
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Union
@@ -18,9 +19,13 @@ from mosaic_config.state_utils import (
     save_state,
 )
 from mosaic_planner.planner import (
+    chunk_data,
     deserialize_plan_with_data,
+    get_directory_size,
     prepare_file_data_for_transmission,
+    save_chunk_to_disk,
     serialize_plan_with_data,
+    unzip_stream_memory_safe,
 )
 from mosaic_planner.state import Data, FileDefinition, Plan
 from mosaic_stats.benchmark import load_benchmarks
@@ -109,11 +114,16 @@ class Beacon:
         # Handlers can accept Dict (JSON) or bytes (binary/pickled) payloads
         self._command_handlers: Dict[str, Callable[[Union[Dict[str, Any], bytes]], Optional[Any]]] = {}
         
+        # Track chunks being received (chunk_id -> list of chunks)
+        self._chunk_storage: Dict[str, Dict[str, Any]] = {}
+        
         # Register default command handlers
         self.register("add_peer", self._handle_add_peer)
         self.register("ping", self._handle_ping_test)
         self.register("stats", self._handle_stats)
         self.register("exdplan", self._handle_execute_data_plan)
+        self.register("exdplan_chunk", self._handle_execute_data_plan_chunk)
+        self.register("exdplan_finalize", self._handle_execute_data_plan_finalize)
 
         # Thread control
         self._stop_event = threading.Event()
@@ -1299,18 +1309,71 @@ class Beacon:
                 except Exception as e:
                     logger.error(f"Error executing data plan locally: {e}")
             else:
-                # Send to remote node
+                # Send to remote node with chunking if needed
                 try:
-                    logger.info(f"Sending data plan to {host}:{comms_port}")
-                    result = self.send_command(
-                        host=host,
-                        port=comms_port,
-                        command="exdplan",
-                        payload=serialized_data,
-                        timeout=300.0,  # Longer timeout for data transfer
-                    )
-                    if result is None:
-                        logger.warning(f"No response from {host}:{comms_port} for data plan")
+                    # Calculate total size of serialized data
+                    data_size_bytes = len(serialized_data)
+                    chunk_size_mb = self.config.data_chunk_size
+                    chunk_size_bytes = chunk_size_mb * 1024 * 1024
+                    
+                    if data_size_bytes <= chunk_size_bytes:
+                        # Small enough to send in one chunk
+                        logger.info(f"Sending data plan to {host}:{comms_port} (single chunk, {data_size_bytes / 1024 / 1024:.2f} MB)")
+                        result = self.send_command(
+                            host=host,
+                            port=comms_port,
+                            command="exdplan",
+                            payload=serialized_data,
+                            timeout=300.0,  # Longer timeout for data transfer
+                        )
+                        if result is None:
+                            logger.warning(f"No response from {host}:{comms_port} for data plan")
+                    else:
+                        # Need to chunk
+                        chunks = chunk_data(serialized_data, chunk_size_mb)
+                        chunk_id = str(uuid.uuid4())
+                        total_chunks = len(chunks)
+                        
+                        logger.info(f"Sending data plan to {host}:{comms_port} in {total_chunks} chunks (chunk_id: {chunk_id})")
+                        
+                        # Send each chunk
+                        for chunk_index, chunk in enumerate(chunks):
+                            # Create chunk payload with metadata in header
+                            # We'll use a custom header format for chunks
+                            chunk_header = {
+                                "chunk_id": chunk_id,
+                                "chunk_index": chunk_index,
+                                "total_chunks": total_chunks,
+                            }
+                            
+                            # Send chunk data as binary with metadata in header
+                            # We need to modify send_command to support custom headers
+                            # For now, pickle the header and prepend it to chunk
+                            header_bytes = pickle.dumps(chunk_header)
+                            header_length = len(header_bytes).to_bytes(4, byteorder="big")
+                            chunk_with_header = header_length + header_bytes + chunk
+                            
+                            result = self.send_command(
+                                host=host,
+                                port=comms_port,
+                                command="exdplan_chunk",
+                                payload=chunk_with_header,
+                                timeout=300.0,
+                            )
+                            
+                            if result is None:
+                                logger.warning(f"No response for chunk {chunk_index + 1}/{total_chunks} from {host}:{comms_port}")
+                                break
+                        
+                        # Send final command to trigger processing
+                        logger.info(f"Sending final command to process chunks (chunk_id: {chunk_id})")
+                        result = self.send_command(
+                            host=host,
+                            port=comms_port,
+                            command="exdplan_finalize",
+                            payload={"chunk_id": chunk_id},
+                            timeout=300.0,
+                        )
                 except Exception as e:
                     logger.error(f"Error sending data plan to {host}:{comms_port}: {e}")
 
@@ -1341,13 +1404,192 @@ class Beacon:
             # Store or process the data as needed
             # For now, just log the receipt
             
+            # Process each file definition with memory-safe unzipping
+            temp_dir = Path(self.config.data_location) / "temp_received"
+            temp_dir.mkdir(parents=True, exist_ok=True)
+            
+            for file_def in data.file_definitions:
+                if file_def.binary_data:
+                    # Save chunk to temp file
+                    chunk_file = temp_dir / f"{uuid.uuid4()}.zip"
+                    with open(chunk_file, 'wb') as f:
+                        f.write(file_def.binary_data)
+                    
+                    # Extract to final location using memory-safe unzip
+                    extract_to = Path(self.config.data_location) / file_def.location
+                    extract_to.parent.mkdir(parents=True, exist_ok=True)
+                    
+                    unzip_stream_memory_safe(chunk_file, extract_to)
+                    
+                    # Clean up temp file
+                    chunk_file.unlink()
+            
+            # Clean up temp dir if empty
+            try:
+                temp_dir.rmdir()
+            except OSError:
+                pass  # Directory not empty, that's fine
+            
             return {
                 "status": "success",
-                "message": f"Received {len(data.file_definitions)} file definitions",
+                "message": f"Received and processed {len(data.file_definitions)} file definitions",
                 "file_count": len(data.file_definitions),
             }
         except Exception as e:
             logger.error(f"Error handling execute_data_plan: {e}")
+            return {"status": "error", "message": str(e)}
+    
+    def _handle_execute_data_plan_chunk(self, payload: Union[Dict[str, Any], bytes]) -> Optional[Dict[str, Any]]:
+        """
+        Handle a chunk of data plan.
+        
+        Saves chunks to disk incrementally to avoid memory issues.
+        
+        Args:
+            payload: Bytes with header (4-byte length + pickled header dict) + chunk data
+        
+        Returns:
+            Dictionary with status information
+        """
+        if not isinstance(payload, bytes):
+            logger.error("exdplan_chunk payload must be bytes")
+            return {"status": "error", "message": "Payload must be bytes"}
+        
+        try:
+            # Extract header (first 4 bytes are length, then pickled header, then chunk data)
+            header_length = int.from_bytes(payload[:4], byteorder="big")
+            header_bytes = payload[4:4+header_length]
+            chunk_data = payload[4+header_length:]
+            
+            chunk_header = pickle.loads(header_bytes)
+            chunk_id = chunk_header.get("chunk_id")
+            chunk_index = chunk_header.get("chunk_index")
+            total_chunks = chunk_header.get("total_chunks")
+            
+            if not all([chunk_id, chunk_index is not None, total_chunks]):
+                logger.error("Missing required fields in chunk header")
+                return {"status": "error", "message": "Missing required fields"}
+            
+            # Initialize chunk storage if needed
+            if chunk_id not in self._chunk_storage:
+                self._chunk_storage[chunk_id] = {
+                    "total_chunks": total_chunks,
+                    "chunks_received": 0,
+                }
+            
+            # Save chunk to disk
+            temp_dir = Path(self.config.data_location) / "temp_chunks"
+            temp_dir.mkdir(parents=True, exist_ok=True)
+            chunk_file = temp_dir / f"{chunk_id}.part"
+            
+            is_first_chunk = (chunk_index == 0)
+            save_chunk_to_disk(chunk_data, chunk_file, is_first_chunk=is_first_chunk)
+            
+            self._chunk_storage[chunk_id]["chunks_received"] += 1
+            
+            logger.info(f"Received chunk {chunk_index + 1}/{total_chunks} for chunk_id {chunk_id}")
+            
+            return {
+                "status": "success",
+                "message": f"Received chunk {chunk_index + 1}/{total_chunks}",
+                "chunk_index": chunk_index,
+            }
+        except Exception as e:
+            logger.error(f"Error handling chunk: {e}")
+            return {"status": "error", "message": str(e)}
+    
+    def _handle_execute_data_plan_finalize(self, payload: Union[Dict[str, Any], bytes]) -> Optional[Dict[str, Any]]:
+        """
+        Handle finalization of chunked data plan.
+        
+        Reconstructs the full data from chunks and processes it.
+        
+        Args:
+            payload: Dictionary with chunk_id
+        
+        Returns:
+            Dictionary with status information
+        """
+        if not isinstance(payload, dict):
+            logger.error("exdplan_finalize payload must be a dictionary")
+            return {"status": "error", "message": "Payload must be a dictionary"}
+        
+        chunk_id = payload.get("chunk_id")
+        if not chunk_id:
+            logger.error("Missing chunk_id in finalize payload")
+            return {"status": "error", "message": "Missing chunk_id"}
+        
+        try:
+            # Check if all chunks received
+            if chunk_id not in self._chunk_storage:
+                logger.error(f"Chunk ID {chunk_id} not found in storage")
+                return {"status": "error", "message": "Chunk ID not found"}
+            
+            chunk_info = self._chunk_storage[chunk_id]
+            total_chunks = chunk_info["total_chunks"]
+            chunks_received = chunk_info["chunks_received"]
+            
+            if chunks_received != total_chunks:
+                logger.error(f"Not all chunks received: {chunks_received}/{total_chunks}")
+                return {"status": "error", "message": f"Not all chunks received: {chunks_received}/{total_chunks}"}
+            
+            # Read the complete file
+            temp_dir = Path(self.config.data_location) / "temp_chunks"
+            chunk_file = temp_dir / f"{chunk_id}.part"
+            
+            if not chunk_file.exists():
+                logger.error(f"Chunk file not found: {chunk_file}")
+                return {"status": "error", "message": "Chunk file not found"}
+            
+            with open(chunk_file, 'rb') as f:
+                complete_data = f.read()
+            
+            # Process the complete data
+            plan, data = deserialize_plan_with_data(complete_data, compressed=True)
+            
+            logger.info(f"Finalized data plan with {len(data.file_definitions)} file definitions")
+            
+            # Process each file definition with memory-safe unzipping
+            extract_temp_dir = Path(self.config.data_location) / "temp_received"
+            extract_temp_dir.mkdir(parents=True, exist_ok=True)
+            
+            for file_def in data.file_definitions:
+                if file_def.binary_data:
+                    # Save to temp file
+                    temp_zip = extract_temp_dir / f"{uuid.uuid4()}.zip"
+                    with open(temp_zip, 'wb') as f:
+                        f.write(file_def.binary_data)
+                    
+                    # Extract using memory-safe unzip
+                    extract_to = Path(self.config.data_location) / file_def.location
+                    extract_to.parent.mkdir(parents=True, exist_ok=True)
+                    
+                    unzip_stream_memory_safe(temp_zip, extract_to)
+                    
+                    # Clean up
+                    temp_zip.unlink()
+            
+            # Clean up chunk file and storage
+            chunk_file.unlink()
+            del self._chunk_storage[chunk_id]
+            
+            # Clean up temp dirs if empty
+            try:
+                extract_temp_dir.rmdir()
+            except OSError:
+                pass
+            try:
+                temp_dir.rmdir()
+            except OSError:
+                pass
+            
+            return {
+                "status": "success",
+                "message": f"Finalized and processed {len(data.file_definitions)} file definitions",
+                "file_count": len(data.file_definitions),
+            }
+        except Exception as e:
+            logger.error(f"Error finalizing data plan: {e}")
             return {"status": "error", "message": str(e)}
 
     def stop(self) -> None:
