@@ -1,13 +1,15 @@
 """Utility functions for planning data and ML workload distribution."""
 
+import csv
 import gzip
+import io
 import os
 import pickle
 import tempfile
 import time
 import uuid
 import zipfile
-from io import BytesIO
+from io import BytesIO, StringIO
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple, Union
 
@@ -1724,9 +1726,6 @@ def prepare_file_data_for_transmission(
 
 def _prepare_csv_segment(file_path: Path, segment_info: Dict[str, Any]) -> bytes:
     """Prepare CSV segment for transmission (always zipped)."""
-    import csv
-    from io import StringIO
-    
     start_row = segment_info.get("start_row", 0)
     end_row = segment_info.get("end_row", 0)
     
@@ -1842,8 +1841,6 @@ def _prepare_graph_segment(file_path: Path, segment_info: Dict[str, Any]) -> byt
     
     # For graph data, we need to extract the relevant nodes
     # This is a simplified implementation - in practice, you'd need to parse the graph format
-    import csv
-    
     # Read node features and filter by range
     node_feat_file = file_path / 'node-feat.csv'
     if node_feat_file.exists():
@@ -1858,8 +1855,7 @@ def _prepare_graph_segment(file_path: Path, segment_info: Dict[str, Any]) -> byt
                         segment_rows.append(row)
             
             # Write segment to zip
-            import io
-            segment_csv = io.StringIO()
+            segment_csv = StringIO()
             writer = csv.writer(segment_csv)
             writer.writerows(segment_rows)
             zip_file.writestr('node-feat-segment.csv', segment_csv.getvalue())

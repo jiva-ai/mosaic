@@ -1,5 +1,6 @@
 """Beacon class for managing heartbeat communications."""
 
+import gzip
 import json
 import logging
 import pickle
@@ -1193,9 +1194,8 @@ class Beacon:
         
         # Check if host is one of the local IP addresses
         try:
-            import socket as sock
             # Get local hostname
-            local_hostname = sock.gethostname()
+            local_hostname = socket.gethostname()
             if host == local_hostname and port == self.config.comms_port:
                 return True
             
@@ -1203,7 +1203,7 @@ class Beacon:
             local_ips = []
             try:
                 # Try to get primary IP
-                s = sock.socket(sock.AF_INET, sock.SOCK_DGRAM)
+                s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
                 s.connect(("8.8.8.8", 80))
                 local_ips.append(s.getsockname()[0])
                 s.close()
@@ -1458,7 +1458,6 @@ class Beacon:
                 )
             
             # Construct file path
-            from pathlib import Path
             models_path = Path(self.config.models_location) if self.config.models_location else Path("models")
             
             if model.onnx_location:
@@ -1496,7 +1495,6 @@ class Beacon:
         
         # Serialize model for transmission
         try:
-            import gzip
             # Pickle the model
             pickled_model = pickle.dumps(model)
             # Compress it
@@ -1603,13 +1601,12 @@ class Beacon:
         
         try:
             # Deserialize model
-            import gzip
             # Decompress
             pickled_model = gzip.decompress(payload)
             # Unpickle
             model = pickle.loads(pickled_model)
             
-            # Import add_model from mosaic
+            # Import add_model from mosaic (inside function to avoid circular import)
             from mosaic.mosaic import add_model
             
             # Add the model

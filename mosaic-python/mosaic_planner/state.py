@@ -1,5 +1,6 @@
 """Planning state management classes for Mosaic network."""
 
+import re
 import time
 import uuid
 from dataclasses import dataclass, field
@@ -98,7 +99,6 @@ class Model:
         Returns:
             Sanitized filename safe for filesystems
         """
-        import re
         # Replace spaces and invalid filename characters with underscore
         # Invalid characters for Unix: / \0 and any control characters
         # Also replace common problematic characters: spaces, < > : " | ? * and symbols

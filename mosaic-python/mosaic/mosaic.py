@@ -2,9 +2,13 @@
 
 import argparse
 import logging
+import pickle
+import re
 import sys
+import time
 from dataclasses import asdict
 from enum import Enum
+from pathlib import Path
 from typing import Any, Dict, List, Optional, Union
 
 from mosaic_comms.beacon import Beacon
@@ -14,7 +18,7 @@ from mosaic_planner import (
     plan_dynamic_weighted_batches,
     plan_static_weighted_shards,
 )
-from mosaic_planner.state import Model, Plan, Session
+from mosaic_planner.state import Model, ModelType, Plan, Session
 
 # Set up logging
 logger = logging.getLogger(__name__)
@@ -229,15 +233,12 @@ def _handle_add_model_command(payload: Union[Dict[str, Any], bytes]) -> Optional
     Returns:
         Dictionary with status information
     """
-    import pickle
-    
     try:
         # Deserialize model if it's bytes
         if isinstance(payload, bytes):
             model = pickle.loads(payload)
         else:
             # Reconstruct Model from dict
-            from mosaic_planner.state import ModelType
             model_type = None
             if payload.get("model_type"):
                 model_type = ModelType(payload["model_type"])
@@ -322,7 +323,6 @@ def _sanitize_filename(name: str) -> str:
     Returns:
         Sanitized filename safe for Unix filesystems
     """
-    import re
     # Replace spaces and invalid filename characters with underscore
     # Invalid characters for Unix: / \0 and any control characters
     # Also replace common problematic characters: spaces, < > : " | ? * and symbols
@@ -366,7 +366,6 @@ def add_model(model: Model) -> None:
         model: Model instance to add
     """
     global _models
-    from pathlib import Path
     
     # If model has binary_rep, save it to disk
     if model.binary_rep is not None:
@@ -595,7 +594,6 @@ def main() -> None:
         # Keep the main thread alive
         try:
             while True:
-                import time
                 time.sleep(1)
         except KeyboardInterrupt:
             logger.info("Shutting down...")
