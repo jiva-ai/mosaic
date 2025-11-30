@@ -1699,6 +1699,10 @@ def prepare_file_data_for_transmission(
     
     # Handle segmentable files based on data type
     # All segments are zipped for consistent handling
+    # Check if path exists before processing
+    if not full_path.exists():
+        raise ValueError(f"Path does not exist: {full_path}")
+    
     if file_def.data_type == DataType.CSV:
         return _prepare_csv_segment(full_path, segment_info)
     elif file_def.data_type == DataType.IMAGE:
@@ -1721,6 +1725,7 @@ def prepare_file_data_for_transmission(
 def _prepare_csv_segment(file_path: Path, segment_info: Dict[str, Any]) -> bytes:
     """Prepare CSV segment for transmission (always zipped)."""
     import csv
+    from io import StringIO
     
     start_row = segment_info.get("start_row", 0)
     end_row = segment_info.get("end_row", 0)
@@ -1736,11 +1741,11 @@ def _prepare_csv_segment(file_path: Path, segment_info: Dict[str, Any]) -> bytes
             if start_row <= i < end_row:
                 rows.append(row)
     
-    # Convert to CSV string
-    output = BytesIO()
+    # Convert to CSV string (use StringIO for text, not BytesIO)
+    output = StringIO()
     writer = csv.writer(output)
     writer.writerows(rows)
-    csv_data = output.getvalue()
+    csv_data = output.getvalue().encode('utf-8')
     
     # Always zip
     zip_buffer = BytesIO()
@@ -1762,7 +1767,12 @@ def _prepare_image_segment(file_path: Path, segment_info: Dict[str, Any]) -> byt
             zip_file.writestr(file_path.name, data)
         elif file_path.is_dir():
             # Multiple images - always zip
-            all_images = sorted([f for f in file_path.rglob('*.png') if f.is_file()])
+            # Support common image formats
+            image_extensions = ['*.png', '*.jpg', '*.jpeg', '*.gif', '*.bmp', '*.tiff', '*.webp']
+            all_images = []
+            for ext in image_extensions:
+                all_images.extend([f for f in file_path.rglob(ext) if f.is_file()])
+            all_images = sorted(all_images)
             for idx in image_indices:
                 if idx < len(all_images):
                     arcname = all_images[idx].relative_to(file_path)

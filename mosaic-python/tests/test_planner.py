@@ -1,6 +1,9 @@
 """Unit tests for mosaic_planner module."""
 
 import time
+from pathlib import Path
+from io import BytesIO
+import zipfile
 
 from mosaic_planner import (
     capacity_score,
