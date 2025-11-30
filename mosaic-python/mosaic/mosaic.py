@@ -3,20 +3,29 @@
 import argparse
 import logging
 import sys
-from typing import Optional
+from dataclasses import asdict
+from enum import Enum
+from typing import Any, Dict, List, Optional
 
 from mosaic_comms.beacon import Beacon
 from mosaic_config.config import MosaicConfig, read_config
+from mosaic_config.state_utils import StateIdentifiers, read_state, save_state
 from mosaic_planner import (
     plan_dynamic_weighted_batches,
     plan_static_weighted_shards,
 )
+from mosaic_planner.state import Plan, Session
 
 # Set up logging
 logger = logging.getLogger(__name__)
 
 # Global beacon instance (set in main())
 _beacon: Optional[Beacon] = None
+
+# Global state lists (maintained at mosaic.py level)
+_sessions: List[Session] = []
+_plans: List[Plan] = []
+_config: Optional[MosaicConfig] = None
 
 
 def _format_send_heartbeat_table(statuses) -> str:
@@ -172,6 +181,84 @@ def show_usage() -> None:
     print("Unknown command. Type 'help' for available commands.")
 
 
+def _convert_enums_to_values(obj: Any) -> Any:
+    """
+    Recursively convert Enum objects to their values for JSON serialization.
+    
+    Args:
+        obj: Object that may contain Enum instances
+    
+    Returns:
+        Object with Enums converted to their values
+    """
+    if isinstance(obj, Enum):
+        return obj.value
+    elif isinstance(obj, dict):
+        return {key: _convert_enums_to_values(value) for key, value in obj.items()}
+    elif isinstance(obj, list):
+        return [_convert_enums_to_values(item) for item in obj]
+    elif isinstance(obj, tuple):
+        return tuple(_convert_enums_to_values(item) for item in obj)
+    else:
+        return obj
+
+
+def _handle_sessions_command(payload: Dict[str, Any]) -> List[Dict[str, Any]]:
+    """
+    Handle 'sessions' command - returns the list of sessions as dictionaries.
+    
+    Args:
+        payload: Command payload (not used, but required by handler signature)
+    
+    Returns:
+        List of Session objects converted to dictionaries with Enums converted to values
+    """
+    # Convert Session dataclasses to dictionaries for JSON serialization
+    sessions_dicts = [asdict(session) for session in _sessions]
+    # Convert Enums to their values for JSON serialization
+    return [_convert_enums_to_values(session_dict) for session_dict in sessions_dicts]
+
+
+def _handle_plans_command(payload: Dict[str, Any]) -> List[Dict[str, Any]]:
+    """
+    Handle 'plans' command - returns the list of plans as dictionaries.
+    
+    Args:
+        payload: Command payload (not used, but required by handler signature)
+    
+    Returns:
+        List of Plan objects converted to dictionaries with Enums converted to values
+    """
+    # Convert Plan dataclasses to dictionaries for JSON serialization
+    plans_dicts = [asdict(plan) for plan in _plans]
+    # Convert Enums to their values for JSON serialization
+    return [_convert_enums_to_values(plan_dict) for plan_dict in plans_dicts]
+
+
+def _save_sessions_state() -> None:
+    """Save sessions list to persistent state."""
+    if _config is None:
+        logger.warning("Cannot save sessions state: config not initialized")
+        return
+    try:
+        save_state(_config, _sessions, StateIdentifiers.SESSIONS)
+        logger.debug("Saved sessions state")
+    except Exception as e:
+        logger.warning(f"Failed to save sessions state: {e}")
+
+
+def _save_plans_state() -> None:
+    """Save plans list to persistent state."""
+    if _config is None:
+        logger.warning("Cannot save plans state: config not initialized")
+        return
+    try:
+        save_state(_config, _plans, StateIdentifiers.PLANS)
+        logger.debug("Saved plans state")
+    except Exception as e:
+        logger.warning(f"Failed to save plans state: {e}")
+
+
 def interpret_command(command: str) -> None:
     """
     Interpret a command from the REPL.
@@ -260,6 +347,35 @@ def main() -> None:
         logger.info("Using default Mosaic configuration")
         config = MosaicConfig()
     
+    # Store config globally
+    global _config
+    _config = config
+    
+    # Step 1.5: Load Sessions and Plans from persistent state
+    logger.info("Loading Sessions and Plans from state...")
+    try:
+        global _sessions, _plans
+        loaded_sessions = read_state(config, StateIdentifiers.SESSIONS, default=None)
+        loaded_plans = read_state(config, StateIdentifiers.PLANS, default=None)
+        
+        if isinstance(loaded_sessions, list):
+            _sessions = loaded_sessions
+            logger.info(f"Loaded {len(_sessions)} sessions from state")
+        else:
+            _sessions = []
+            logger.info("No sessions found in state, initializing empty list")
+        
+        if isinstance(loaded_plans, list):
+            _plans = loaded_plans
+            logger.info(f"Loaded {len(_plans)} plans from state")
+        else:
+            _plans = []
+            logger.info("No plans found in state, initializing empty list")
+    except Exception as e:
+        logger.warning(f"Error loading Sessions/Plans from state: {e}")
+        _sessions = []
+        _plans = []
+    
     # Step 2: Create Beacon
     logger.info("Creating Beacon instance...")
     try:
@@ -269,6 +385,15 @@ def main() -> None:
     except Exception as e:
         logger.error(f"Error creating Beacon: {e}")
         sys.exit(1)
+    
+    # Step 2.5: Register command handlers for sessions and plans
+    logger.info("Registering command handlers...")
+    try:
+        _beacon.register("sessions", _handle_sessions_command)
+        _beacon.register("plans", _handle_plans_command)
+        logger.info("Command handlers registered successfully")
+    except Exception as e:
+        logger.warning(f"Error registering command handlers: {e}")
     
     # Step 3: Start Beacon
     logger.info("Starting Beacon...")

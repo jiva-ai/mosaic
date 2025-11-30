@@ -114,3 +114,48 @@ def mock_state_utils():
         mock_save.return_value = None
         yield {"save": mock_save, "read": mock_read}
 
+
+@pytest.fixture
+def beacon_config_no_ssl(temp_state_dir):
+    """
+    Create a MosaicConfig for beacon testing without SSL.
+    
+    Uses port 5000 for heartbeat and 5001 for comms.
+    """
+    return create_test_config_with_state(
+        state_dir=temp_state_dir,
+        host="127.0.0.1",
+        heartbeat_port=5000,
+        comms_port=5001,
+        heartbeat_frequency=2,
+        heartbeat_tolerance=5,
+        heartbeat_wait_timeout=2,
+        stats_request_timeout=10,
+        server_crt="",
+        server_key="",
+        ca_crt="",
+        benchmark_data_location="",
+    )
+
+
+@pytest.fixture
+def sender_config_no_ssl(temp_state_dir):
+    """
+    Create a MosaicConfig for sender beacon testing without SSL.
+    
+    Uses port 5002 for heartbeat and 5003 for comms.
+    """
+    return create_test_config_with_state(
+        state_dir=temp_state_dir,
+        host="127.0.0.1",
+        heartbeat_port=5002,
+        comms_port=5003,
+        heartbeat_frequency=2,
+        heartbeat_tolerance=5,
+        heartbeat_wait_timeout=2,
+        stats_request_timeout=10,
+        server_crt="",
+        server_key="",
+        ca_crt="",
+        benchmark_data_location="",
+    )

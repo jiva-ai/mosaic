@@ -1,6 +1,7 @@
 """Planning state management classes for Mosaic network."""
 
 import time
+import uuid
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any, Dict, List, Optional
@@ -80,6 +81,7 @@ class Plan:
     distribution_plan: List[Dict[str, Any]]  # Result of calculate_data_distribution call
     model: Model
     data_segmentation_plan: Optional[List[Dict[str, Any]]] = None  # Plan for data sharding across machines
+    id: str = field(default_factory=lambda: str(uuid.uuid4()))  # Unique identifier
 
 
 @dataclass
@@ -90,6 +92,7 @@ class Session:
     time_started: int = field(init=False)  # Millis since epoch
     time_ended: int = -1  # Millis since epoch, -1 means not finished
     status: str = "idle"  # idle, running, error, complete
+    id: str = field(init=False)  # Unique identifier
 
     def __init__(
         self,
@@ -97,6 +100,7 @@ class Session:
         time_started: Optional[int] = None,
         time_ended: int = -1,
         status: str = "idle",
+        id: Optional[str] = None,
     ):
         """
         Initialize Session instance.
@@ -106,11 +110,13 @@ class Session:
             time_started: Optional start time in millis since epoch. Defaults to current time.
             time_ended: End time in millis since epoch. Defaults to -1 (not finished).
             status: Status string. Defaults to "idle".
+            id: Optional unique identifier. If not provided, generates a new UUID.
         """
         self.plan = plan
         self.time_started = time_started if time_started is not None else int(time.time() * 1000)
         self.time_ended = time_ended
         self.status = status
+        self.id = id if id is not None else str(uuid.uuid4())
 
 
 @dataclass

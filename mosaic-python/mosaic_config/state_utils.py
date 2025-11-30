@@ -21,6 +21,8 @@ class StateIdentifiers:
     
     SEND_HEARTBEAT_STATUSES = "send_heartbeat_statuses"
     RECEIVE_HEARTBEAT_STATUSES = "receive_heartbeat_statuses"
+    SESSIONS = "sessions"
+    PLANS = "plans"
 
 
 def _get_state_directory(config: MosaicConfig) -> Path:
