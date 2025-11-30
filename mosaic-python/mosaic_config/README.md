@@ -80,7 +80,7 @@ The configuration file must be valid JSON with the following structure:
 | `ca_crt` | string | `""` | Path to the SSL Certificate Authority certificate file |
 | `benchmark_data_location` | string | `""` | Directory path where benchmark data is stored |
 | `run_benchmark_at_startup` | boolean | `false` | Whether to run benchmarks when the node starts |
-| `data_location` | string | `""` | Directory path where operational data can be found |
+| `data_location` | string | `""` | Directory path where operational data can be found. When data is received via `execute_data_plan`, it is extracted to a subdirectory named after the session ID (e.g., `{data_location}/{session_id}/{file_location}`) to prevent overwrites between different data plan executions |
 | `plans_location` | string | `"plans"` | Directory path where plans for data and model distribution are kept |
 | `models_location` | string | `"models"` | Directory path where model data is stored, such as ONNX files |
 | `state_location` | string | `""` | Directory path where current state is stored (defaults to current working directory if empty) |

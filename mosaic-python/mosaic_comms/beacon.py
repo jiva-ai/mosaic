@@ -1400,6 +1400,26 @@ class Beacon:
             
             logger.info(f"Received data plan with {len(data.file_definitions)} file definitions")
             
+            # Create or get session for this data plan execution (before extraction)
+            session = None
+            try:
+                # Import here to avoid circular import
+                from mosaic.mosaic import add_session, _sessions
+                
+                # Check if session with this plan.id already exists to avoid duplicates
+                existing_session = next((s for s in _sessions if s.plan.id == plan.id), None)
+                if existing_session is None:
+                    session = Session(plan=plan, data=data, status=SessionStatus.RUNNING)
+                    add_session(session)
+                    logger.info(f"Created session {session.id} for plan {plan.id}")
+                else:
+                    session = existing_session
+                    logger.info(f"Using existing session {session.id} for plan {plan.id}")
+            except Exception as e:
+                logger.warning(f"Failed to create/get session: {e}")
+                # If session creation fails, we'll still extract but without session subdirectory
+                # This maintains backward compatibility in case of errors
+            
             # Process each file definition with memory-safe unzipping
             temp_dir = Path(self.config.data_location) / "temp_received"
             temp_dir.mkdir(parents=True, exist_ok=True)
@@ -1412,7 +1432,12 @@ class Beacon:
                         f.write(file_def.binary_data)
                     
                     # Extract to final location using memory-safe unzip
-                    extract_to = Path(self.config.data_location) / file_def.location
+                    # Use session ID as subdirectory to prevent overwrites
+                    if session is not None:
+                        extract_to = Path(self.config.data_location) / session.id / file_def.location
+                    else:
+                        # Fallback to old behavior if session creation failed
+                        extract_to = Path(self.config.data_location) / file_def.location
                     extract_to.parent.mkdir(parents=True, exist_ok=True)
                     
                     unzip_stream_memory_safe(chunk_file, extract_to)
@@ -1425,22 +1450,6 @@ class Beacon:
                 temp_dir.rmdir()
             except OSError:
                 pass  # Directory not empty, that's fine
-            
-            # Create session for this data plan execution
-            try:
-                # Import here to avoid circular import
-                from mosaic.mosaic import add_session, _sessions
-                
-                # Check if session with this plan.id already exists to avoid duplicates
-                existing_session = next((s for s in _sessions if s.plan.id == plan.id), None)
-                if existing_session is None:
-                    session = Session(plan=plan, data=data, status=SessionStatus.RUNNING)
-                    add_session(session)
-                    logger.info(f"Created session {session.id} for plan {plan.id}")
-                else:
-                    logger.info(f"Session already exists for plan {plan.id}, skipping creation")
-            except Exception as e:
-                logger.warning(f"Failed to create session: {e}")
             
             return {
                 "status": "success",
@@ -1561,6 +1570,26 @@ class Beacon:
             
             logger.info(f"Finalized data plan with {len(data.file_definitions)} file definitions")
             
+            # Create or get session for this data plan execution (before extraction)
+            session = None
+            try:
+                # Import here to avoid circular import
+                from mosaic.mosaic import add_session, _sessions
+                
+                # Check if session with this plan.id already exists to avoid duplicates
+                existing_session = next((s for s in _sessions if s.plan.id == plan.id), None)
+                if existing_session is None:
+                    session = Session(plan=plan, data=data, status=SessionStatus.RUNNING)
+                    add_session(session)
+                    logger.info(f"Created session {session.id} for plan {plan.id} (chunked)")
+                else:
+                    session = existing_session
+                    logger.info(f"Using existing session {session.id} for plan {plan.id}")
+            except Exception as e:
+                logger.warning(f"Failed to create/get session: {e}")
+                # If session creation fails, we'll still extract but without session subdirectory
+                # This maintains backward compatibility in case of errors
+            
             # Process each file definition with memory-safe unzipping
             extract_temp_dir = Path(self.config.data_location) / "temp_received"
             extract_temp_dir.mkdir(parents=True, exist_ok=True)
@@ -1573,7 +1602,12 @@ class Beacon:
                         f.write(file_def.binary_data)
                     
                     # Extract using memory-safe unzip
-                    extract_to = Path(self.config.data_location) / file_def.location
+                    # Use session ID as subdirectory to prevent overwrites
+                    if session is not None:
+                        extract_to = Path(self.config.data_location) / session.id / file_def.location
+                    else:
+                        # Fallback to old behavior if session creation failed
+                        extract_to = Path(self.config.data_location) / file_def.location
                     extract_to.parent.mkdir(parents=True, exist_ok=True)
                     
                     unzip_stream_memory_safe(temp_zip, extract_to)
@@ -1594,22 +1628,6 @@ class Beacon:
                 temp_dir.rmdir()
             except OSError:
                 pass
-            
-            # Create session for this data plan execution (only once after all chunks received)
-            try:
-                # Import here to avoid circular import
-                from mosaic.mosaic import add_session, _sessions
-                
-                # Check if session with this plan.id already exists to avoid duplicates
-                existing_session = next((s for s in _sessions if s.plan.id == plan.id), None)
-                if existing_session is None:
-                    session = Session(plan=plan, data=data, status=SessionStatus.RUNNING)
-                    add_session(session)
-                    logger.info(f"Created session {session.id} for plan {plan.id} (chunked)")
-                else:
-                    logger.info(f"Session already exists for plan {plan.id}, skipping creation")
-            except Exception as e:
-                logger.warning(f"Failed to create session: {e}")
             
             return {
                 "status": "success",

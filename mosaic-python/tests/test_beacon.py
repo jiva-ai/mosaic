@@ -1348,7 +1348,30 @@ class TestBeaconCollectStats:
             assert len(session.data.file_definitions) == 1, "Session data should have file definitions"
             assert session.data.file_definitions[0].location == "test_file", "Session data should match original data"
             
-            # Clean up any remaining temp directories
+            # Verify files are extracted to session-specific directory
+            session_id = session.id
+            session_dir = test_data_dir / session_id
+            extract_location = session_dir / "test_file"
+            expected_file = extract_location / "test_file.csv"
+            
+            assert session_dir.exists(), f"Session directory {session_id} should exist"
+            assert extract_location.exists(), f"Extract location {extract_location} should exist"
+            assert expected_file.exists(), f"File should be extracted to {expected_file}"
+            
+            # Verify file content is correct
+            with open(expected_file, 'r', encoding='utf-8') as f:
+                content = f.read()
+            assert content == 'col1,col2\nval1,val2\n', "File content should match original"
+            
+            # Verify file is NOT in the old location (without session ID)
+            old_location_dir = test_data_dir / "test_file"
+            old_location_file = old_location_dir / "test_file.csv"
+            assert not old_location_file.exists(), f"File should NOT be in old location {old_location_file}"
+            
+            # Clean up session directory and temp directories
+            if session_dir.exists():
+                import shutil
+                shutil.rmtree(session_dir)
             try:
                 temp_chunks_dir.rmdir()
             except OSError:
@@ -1434,6 +1457,114 @@ class TestBeaconCollectStats:
             assert len(session.data.file_definitions) == 1, "Session data should have file definitions"
             assert session.data.file_definitions[0].location == "test_file", "Session data should match original data"
             assert session.data.file_definitions[0].data_type == DataType.CSV, "Session data should have correct data type"
+
+    def test_execute_data_plan_extracts_to_session_directory(self, temp_state_dir):
+        """Test that _handle_execute_data_plan extracts files to a session-specific directory."""
+        import zipfile
+        import shutil
+        from io import BytesIO
+        from pathlib import Path
+        from mosaic_planner.planner import serialize_plan_with_data
+        from mosaic_planner.state import Data, FileDefinition, DataType, Model, Plan
+        
+        # Set up test_data directory as data_location
+        test_data_dir = Path(__file__).parent / 'test_data'
+        test_data_dir.mkdir(exist_ok=True)
+        
+        config = create_test_config_with_state(
+            state_dir=temp_state_dir,
+            host="127.0.0.1",
+            heartbeat_port=5000,
+            comms_port=5001,
+            heartbeat_frequency=2,
+            heartbeat_tolerance=5,
+            heartbeat_wait_timeout=2,
+            stats_request_timeout=10,
+            server_crt="",
+            server_key="",
+            ca_crt="",
+            benchmark_data_location="",
+            data_location=str(test_data_dir),
+        )
+        
+        with patch("mosaic_comms.beacon.StatsCollector") as mock_stats_class:
+            mock_stats = MagicMock()
+            mock_stats.get_last_stats_json.return_value = '{"cpu_percent": 45.3}'
+            mock_stats_class.return_value = mock_stats
+            
+            beacon = Beacon(config)
+            
+            # Clear any existing sessions
+            from mosaic.mosaic import _sessions
+            initial_session_count = len(_sessions)
+            
+            # Create test plan and data
+            model = Model(name="test_model")
+            plan = Plan(
+                stats_data=[],
+                distribution_plan=[],
+                model=model,
+            )
+            
+            # Create a valid zip file for binary_data with a test file
+            test_file_content = 'col1,col2\nval1,val2\nval3,val4\n'
+            zip_buffer = BytesIO()
+            with zipfile.ZipFile(zip_buffer, 'w', zipfile.ZIP_DEFLATED) as zip_file:
+                zip_file.writestr('test_file.csv', test_file_content)
+            zip_data = zip_buffer.getvalue()
+            
+            file_def = FileDefinition(
+                location="test_session_file",
+                data_type=DataType.CSV,
+                is_segmentable=True,
+                binary_data=zip_data,
+            )
+            data = Data(file_definitions=[file_def])
+            
+            # Serialize plan and data
+            serialized_data = serialize_plan_with_data(plan, data, compress=True)
+            
+            # Call the handler
+            result = beacon._handle_execute_data_plan(serialized_data)
+            
+            # Verify result
+            assert result is not None
+            assert result["status"] == "success"
+            assert result["file_count"] == 1
+            
+            # Verify that a session was created
+            assert len(_sessions) == initial_session_count + 1, "One session should be created"
+            session = _sessions[-1]  # Get the most recently added session
+            session_id = session.id
+            
+            # Verify files are extracted to session-specific directory
+            # The extraction path is: {data_location}/{session_id}/{file_def.location}
+            session_dir = test_data_dir / session_id
+            extract_location = session_dir / "test_session_file"
+            expected_file = extract_location / "test_file.csv"
+            
+            assert session_dir.exists(), f"Session directory {session_id} should exist"
+            assert extract_location.exists(), f"Extract location {extract_location} should exist"
+            assert expected_file.exists(), f"File should be extracted to {expected_file}"
+            
+            # Verify file content is correct
+            with open(expected_file, 'r', encoding='utf-8') as f:
+                content = f.read()
+            assert content == test_file_content, "File content should match original"
+            
+            # Verify file is NOT in the old location (without session ID)
+            old_location_dir = test_data_dir / "test_session_file"
+            old_location_file = old_location_dir / "test_file.csv"
+            assert not old_location_file.exists(), f"File should NOT be in old location {old_location_file}"
+            # The old location directory might exist if it was created, but it shouldn't have the file
+            if old_location_dir.exists():
+                files_in_old_location = list(old_location_dir.rglob('*'))
+                files_in_old_location = [f for f in files_in_old_location if f.is_file()]
+                assert len(files_in_old_location) == 0, f"Old location should not contain files, found: {files_in_old_location}"
+            
+            # Clean up
+            if session_dir.exists():
+                shutil.rmtree(session_dir)
 
     def test_large_directory_transfer_with_chunking(self, temp_state_dir):
         """Test transferring a 16MB directory between 2 beacons with chunking."""
