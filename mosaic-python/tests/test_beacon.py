@@ -1339,11 +1339,101 @@ class TestBeaconCollectStats:
             # Verify temp directories are cleaned up (or at least chunk file is gone)
             assert not chunk_file.exists(), "Chunk file should be cleaned up"
             
+            # Verify that a session was created
+            from mosaic.mosaic import _sessions
+            assert len(_sessions) > 0, "Session should be created after finalize"
+            session = _sessions[-1]  # Get the most recently added session
+            assert session.plan.id == plan.id, "Session should have the correct plan"
+            assert session.data is not None, "Session should have data"
+            assert len(session.data.file_definitions) == 1, "Session data should have file definitions"
+            assert session.data.file_definitions[0].location == "test_file", "Session data should match original data"
+            
             # Clean up any remaining temp directories
             try:
                 temp_chunks_dir.rmdir()
             except OSError:
                 pass
+
+    def test_handle_execute_data_plan_creates_session(self, temp_state_dir):
+        """Test that _handle_execute_data_plan creates a session after processing."""
+        import zipfile
+        from io import BytesIO
+        from pathlib import Path
+        from mosaic_planner.planner import serialize_plan_with_data
+        from mosaic_planner.state import Data, FileDefinition, DataType, Model, Plan
+        
+        # Set up test_data directory as data_location
+        test_data_dir = Path(__file__).parent / 'test_data'
+        test_data_dir.mkdir(exist_ok=True)
+        
+        config = create_test_config_with_state(
+            state_dir=temp_state_dir,
+            host="127.0.0.1",
+            heartbeat_port=5000,
+            comms_port=5001,
+            heartbeat_frequency=2,
+            heartbeat_tolerance=5,
+            heartbeat_wait_timeout=2,
+            stats_request_timeout=10,
+            server_crt="",
+            server_key="",
+            ca_crt="",
+            benchmark_data_location="",
+            data_location=str(test_data_dir),
+        )
+        
+        with patch("mosaic_comms.beacon.StatsCollector") as mock_stats_class:
+            mock_stats = MagicMock()
+            mock_stats.get_last_stats_json.return_value = '{"cpu_percent": 45.3}'
+            mock_stats_class.return_value = mock_stats
+            
+            beacon = Beacon(config)
+            
+            # Clear any existing sessions
+            from mosaic.mosaic import _sessions
+            initial_session_count = len(_sessions)
+            
+            # Create test plan and data
+            model = Model(name="test_model")
+            plan = Plan(
+                stats_data=[],
+                distribution_plan=[],
+                model=model,
+            )
+            
+            # Create a valid zip file for binary_data
+            zip_buffer = BytesIO()
+            with zipfile.ZipFile(zip_buffer, 'w', zipfile.ZIP_DEFLATED) as zip_file:
+                zip_file.writestr('test_file.csv', 'col1,col2\nval1,val2\n')
+            zip_data = zip_buffer.getvalue()
+            
+            file_def = FileDefinition(
+                location="test_file",
+                data_type=DataType.CSV,
+                is_segmentable=True,
+                binary_data=zip_data,
+            )
+            data = Data(file_definitions=[file_def])
+            
+            # Serialize plan and data
+            serialized_data = serialize_plan_with_data(plan, data, compress=True)
+            
+            # Call the handler
+            result = beacon._handle_execute_data_plan(serialized_data)
+            
+            # Verify result
+            assert result is not None
+            assert result["status"] == "success"
+            assert result["file_count"] == 1
+            
+            # Verify that a session was created
+            assert len(_sessions) == initial_session_count + 1, "One session should be created"
+            session = _sessions[-1]  # Get the most recently added session
+            assert session.plan.id == plan.id, "Session should have the correct plan"
+            assert session.data is not None, "Session should have data"
+            assert len(session.data.file_definitions) == 1, "Session data should have file definitions"
+            assert session.data.file_definitions[0].location == "test_file", "Session data should match original data"
+            assert session.data.file_definitions[0].data_type == DataType.CSV, "Session data should have correct data type"
 
     def test_large_directory_transfer_with_chunking(self, temp_state_dir):
         """Test transferring a 16MB directory between 2 beacons with chunking."""

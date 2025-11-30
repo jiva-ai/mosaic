@@ -27,7 +27,7 @@ from mosaic_planner.planner import (
     serialize_plan_with_data,
     unzip_stream_memory_safe,
 )
-from mosaic_planner.state import Data, FileDefinition, Plan
+from mosaic_planner.state import Data, FileDefinition, Plan, Session, SessionStatus
 from mosaic_stats.benchmark import load_benchmarks
 from mosaic_stats.stats_collector import StatsCollector
 
@@ -1426,6 +1426,22 @@ class Beacon:
             except OSError:
                 pass  # Directory not empty, that's fine
             
+            # Create session for this data plan execution
+            try:
+                # Import here to avoid circular import
+                from mosaic.mosaic import add_session, _sessions
+                
+                # Check if session with this plan.id already exists to avoid duplicates
+                existing_session = next((s for s in _sessions if s.plan.id == plan.id), None)
+                if existing_session is None:
+                    session = Session(plan=plan, data=data, status=SessionStatus.RUNNING)
+                    add_session(session)
+                    logger.info(f"Created session {session.id} for plan {plan.id}")
+                else:
+                    logger.info(f"Session already exists for plan {plan.id}, skipping creation")
+            except Exception as e:
+                logger.warning(f"Failed to create session: {e}")
+            
             return {
                 "status": "success",
                 "message": f"Received and processed {len(data.file_definitions)} file definitions",
@@ -1578,6 +1594,22 @@ class Beacon:
                 temp_dir.rmdir()
             except OSError:
                 pass
+            
+            # Create session for this data plan execution (only once after all chunks received)
+            try:
+                # Import here to avoid circular import
+                from mosaic.mosaic import add_session, _sessions
+                
+                # Check if session with this plan.id already exists to avoid duplicates
+                existing_session = next((s for s in _sessions if s.plan.id == plan.id), None)
+                if existing_session is None:
+                    session = Session(plan=plan, data=data, status=SessionStatus.RUNNING)
+                    add_session(session)
+                    logger.info(f"Created session {session.id} for plan {plan.id} (chunked)")
+                else:
+                    logger.info(f"Session already exists for plan {plan.id}, skipping creation")
+            except Exception as e:
+                logger.warning(f"Failed to create session: {e}")
             
             return {
                 "status": "success",
