@@ -24,7 +24,6 @@ _beacon: Optional[Beacon] = None
 
 # Global state lists (maintained at mosaic.py level)
 _sessions: List[Session] = []
-_plans: List[Plan] = []
 _config: Optional[MosaicConfig] = None
 
 
@@ -219,22 +218,6 @@ def _handle_sessions_command(payload: Dict[str, Any]) -> List[Dict[str, Any]]:
     return [_convert_enums_to_values(session_dict) for session_dict in sessions_dicts]
 
 
-def _handle_plans_command(payload: Dict[str, Any]) -> List[Dict[str, Any]]:
-    """
-    Handle 'plans' command - returns the list of plans as dictionaries.
-    
-    Args:
-        payload: Command payload (not used, but required by handler signature)
-    
-    Returns:
-        List of Plan objects converted to dictionaries with Enums converted to values
-    """
-    # Convert Plan dataclasses to dictionaries for JSON serialization
-    plans_dicts = [asdict(plan) for plan in _plans]
-    # Convert Enums to their values for JSON serialization
-    return [_convert_enums_to_values(plan_dict) for plan_dict in plans_dicts]
-
-
 def _save_sessions_state() -> None:
     """Save sessions list to persistent state."""
     if _config is None:
@@ -247,16 +230,40 @@ def _save_sessions_state() -> None:
         logger.warning(f"Failed to save sessions state: {e}")
 
 
-def _save_plans_state() -> None:
-    """Save plans list to persistent state."""
-    if _config is None:
-        logger.warning("Cannot save plans state: config not initialized")
-        return
-    try:
-        save_state(_config, _plans, StateIdentifiers.PLANS)
-        logger.debug("Saved plans state")
-    except Exception as e:
-        logger.warning(f"Failed to save plans state: {e}")
+def add_session(session: Session) -> None:
+    """
+    Add a session to the sessions list and persist state.
+    
+    Args:
+        session: Session instance to add
+    """
+    global _sessions
+    _sessions.append(session)
+    _save_sessions_state()
+    logger.debug(f"Added session with ID: {session.id}")
+
+
+def remove_session(session_id: str) -> bool:
+    """
+    Remove a session from the sessions list by ID and persist state.
+    
+    Args:
+        session_id: ID of the session to remove
+    
+    Returns:
+        True if session was found and removed, False otherwise
+    """
+    global _sessions
+    initial_count = len(_sessions)
+    _sessions = [s for s in _sessions if s.id != session_id]
+    
+    if len(_sessions) < initial_count:
+        _save_sessions_state()
+        logger.debug(f"Removed session with ID: {session_id}")
+        return True
+    else:
+        logger.warning(f"Session with ID {session_id} not found")
+        return False
 
 
 def interpret_command(command: str) -> None:
@@ -351,12 +358,11 @@ def main() -> None:
     global _config
     _config = config
     
-    # Step 1.5: Load Sessions and Plans from persistent state
-    logger.info("Loading Sessions and Plans from state...")
+    # Step 1.5: Load Sessions from persistent state
+    logger.info("Loading Sessions from state...")
     try:
-        global _sessions, _plans
+        global _sessions
         loaded_sessions = read_state(config, StateIdentifiers.SESSIONS, default=None)
-        loaded_plans = read_state(config, StateIdentifiers.PLANS, default=None)
         
         if isinstance(loaded_sessions, list):
             _sessions = loaded_sessions
@@ -364,17 +370,9 @@ def main() -> None:
         else:
             _sessions = []
             logger.info("No sessions found in state, initializing empty list")
-        
-        if isinstance(loaded_plans, list):
-            _plans = loaded_plans
-            logger.info(f"Loaded {len(_plans)} plans from state")
-        else:
-            _plans = []
-            logger.info("No plans found in state, initializing empty list")
     except Exception as e:
-        logger.warning(f"Error loading Sessions/Plans from state: {e}")
+        logger.warning(f"Error loading Sessions from state: {e}")
         _sessions = []
-        _plans = []
     
     # Step 2: Create Beacon
     logger.info("Creating Beacon instance...")
@@ -386,11 +384,10 @@ def main() -> None:
         logger.error(f"Error creating Beacon: {e}")
         sys.exit(1)
     
-    # Step 2.5: Register command handlers for sessions and plans
+    # Step 2.5: Register command handlers for sessions
     logger.info("Registering command handlers...")
     try:
         _beacon.register("sessions", _handle_sessions_command)
-        _beacon.register("plans", _handle_plans_command)
         logger.info("Command handlers registered successfully")
     except Exception as e:
         logger.warning(f"Error registering command handlers: {e}")
