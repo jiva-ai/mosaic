@@ -270,6 +270,7 @@ class TestReadConfig:
             assert config.data_location == ""
             assert config.plans_location == "plans"
             assert config.models_location == "models"
+            assert config.state_location == ""
 
     def test_read_config_with_all_fields(self, tmp_path, monkeypatch):
         """Test reading a complete configuration file."""

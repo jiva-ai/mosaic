@@ -56,7 +56,8 @@ The configuration file must be valid JSON with the following structure:
   "run_benchmark_at_startup": false,
   "data_location": "/path/to/data",
   "plans_location": "plans",
-  "models_location": "models"
+  "models_location": "models",
+  "state_location": ""
 }
 ```
 
@@ -81,6 +82,7 @@ The configuration file must be valid JSON with the following structure:
 | `data_location` | string | `""` | Directory path where operational data can be found |
 | `plans_location` | string | `"plans"` | Directory path where plans for data and model distribution are kept |
 | `models_location` | string | `"models"` | Directory path where model data is stored, such as ONNX files |
+| `state_location` | string | `""` | Directory path where current state is stored (defaults to current working directory if empty) |
 
 ### Peers Configuration
 
@@ -196,11 +198,12 @@ All other parameters will use their default values. This is suitable for testing
   "server_crt": "/etc/mosaic/certs/server.crt",
   "server_key": "/etc/mosaic/certs/server.key",
   "ca_crt": "/etc/mosaic/certs/ca.crt",
-  "benchmark_data_location": "/var/mosaic/benchmarks",
+  "benchmark_data_location": "/etc/mosaic/benchmarks",
   "run_benchmark_at_startup": true,
-  "data_location": "/var/mosaic/data",
+  "data_location": "/etc/mosaic/data",
   "plans_location": "plans",
-  "models_location": "models"
+  "models_location": "models",
+  "state_location": "/etc/mosaic/state"
 }
 ```
 

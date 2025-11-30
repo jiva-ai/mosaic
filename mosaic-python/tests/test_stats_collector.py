@@ -9,21 +9,24 @@ import pytest
 
 from mosaic_config.config import MosaicConfig
 from mosaic_stats.stats_collector import StatsCollector
+from tests.conftest import create_test_config_with_state
 
 
 @pytest.fixture
-def mock_config(tmp_path):
+def mock_config(tmp_path, temp_state_dir):
     """Create a mock MosaicConfig for testing."""
-    return MosaicConfig(
+    return create_test_config_with_state(
+        state_dir=temp_state_dir,
         heartbeat_report_length=60,  # 60 seconds for faster testing
         benchmark_data_location=str(tmp_path / "benchmarks"),
     )
 
 
 @pytest.fixture
-def mock_config_no_location():
+def mock_config_no_location(temp_state_dir):
     """Create a mock MosaicConfig without benchmark_data_location."""
-    return MosaicConfig(
+    return create_test_config_with_state(
+        state_dir=temp_state_dir,
         heartbeat_report_length=60,
         benchmark_data_location="",
     )

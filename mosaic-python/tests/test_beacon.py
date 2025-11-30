@@ -11,6 +11,7 @@ import pytest
 
 from mosaic_comms.beacon import Beacon, ReceiveHeartbeatStatus, SendHeartbeatStatus
 from mosaic_config.config import MosaicConfig, Peer
+from tests.conftest import create_test_config_with_state
 
 
 @pytest.fixture(scope="session")
@@ -38,9 +39,10 @@ def test_certs_dir():
 
 
 @pytest.fixture
-def beacon_config(test_certs_dir):
+def beacon_config(test_certs_dir, temp_state_dir):
     """Create a MosaicConfig for beacon testing with SSL certificates."""
-    return MosaicConfig(
+    return create_test_config_with_state(
+        state_dir=temp_state_dir,
         host="127.0.0.1",
         heartbeat_port=5000,
         comms_port=5001,
@@ -55,9 +57,10 @@ def beacon_config(test_certs_dir):
 
 
 @pytest.fixture
-def beacon_config_no_ssl():
+def beacon_config_no_ssl(temp_state_dir):
     """Create a MosaicConfig for beacon testing without SSL certificates."""
-    return MosaicConfig(
+    return create_test_config_with_state(
+        state_dir=temp_state_dir,
         host="127.0.0.1",
         heartbeat_port=5000,
         comms_port=5001,
@@ -72,9 +75,10 @@ def beacon_config_no_ssl():
 
 
 @pytest.fixture
-def sender_config(test_certs_dir):
+def sender_config(test_certs_dir, temp_state_dir):
     """Create a MosaicConfig for the sender beacon."""
-    return MosaicConfig(
+    return create_test_config_with_state(
+        state_dir=temp_state_dir,
         host="127.0.0.1",
         heartbeat_port=5002,  # Different port to avoid conflicts
         comms_port=5003,
@@ -89,9 +93,10 @@ def sender_config(test_certs_dir):
 
 
 @pytest.fixture
-def sender_config_no_ssl():
+def sender_config_no_ssl(temp_state_dir):
     """Create a MosaicConfig for the sender beacon without SSL."""
-    return MosaicConfig(
+    return create_test_config_with_state(
+        state_dir=temp_state_dir,
         host="127.0.0.1",
         heartbeat_port=5002,
         comms_port=5003,
@@ -701,12 +706,13 @@ class TestBeaconCommandRegistration:
                 beacon1.stop()
                 beacon2.stop()
 
-    def test_handle_stats_includes_benchmark_field(self, beacon_config_no_ssl, tmp_path):
+    def test_handle_stats_includes_benchmark_field(self, beacon_config_no_ssl, tmp_path, temp_state_dir):
         """Test that _handle_stats includes benchmark field in status dictionaries."""
         from mosaic_stats.benchmark import save_benchmarks
         
         # Create a config with benchmark_data_location
-        config = MosaicConfig(
+        config = create_test_config_with_state(
+            state_dir=temp_state_dir,
             host="127.0.0.1",
             heartbeat_port=5040,
             comms_port=5041,
@@ -779,10 +785,11 @@ class TestBeaconCommandRegistration:
             assert entry["benchmark"]["host"] == test_benchmark_data["host"]
             assert entry["benchmark"]["cpu"]["gflops"] == test_benchmark_data["cpu"]["gflops"]
 
-    def test_handle_stats_benchmark_none_when_no_file(self, beacon_config_no_ssl):
+    def test_handle_stats_benchmark_none_when_no_file(self, beacon_config_no_ssl, temp_state_dir):
         """Test that _handle_stats returns None for benchmark when no benchmark file exists."""
         # Create a config with empty benchmark_data_location
-        config = MosaicConfig(
+        config = create_test_config_with_state(
+            state_dir=temp_state_dir,
             host="127.0.0.1",
             heartbeat_port=5050,
             comms_port=5051,
@@ -828,10 +835,11 @@ class TestBeaconCommandRegistration:
 class TestBeaconCollectStats:
     """Test collect_stats functionality."""
 
-    def test_collect_stats_aggregates_from_peers(self, beacon_config_no_ssl):
+    def test_collect_stats_aggregates_from_peers(self, beacon_config_no_ssl, temp_state_dir):
         """Test that collect_stats aggregates stats from multiple peers."""
         # Create configs for 3 beacons with different ports
-        config1 = MosaicConfig(
+        config1 = create_test_config_with_state(
+            state_dir=temp_state_dir,
             host="127.0.0.1",
             heartbeat_port=5010,
             comms_port=5011,
@@ -845,7 +853,8 @@ class TestBeaconCollectStats:
             benchmark_data_location="",
         )
 
-        config2 = MosaicConfig(
+        config2 = create_test_config_with_state(
+            state_dir=temp_state_dir,
             host="127.0.0.1",
             heartbeat_port=5020,
             comms_port=5021,
@@ -859,7 +868,8 @@ class TestBeaconCollectStats:
             benchmark_data_location="",
         )
 
-        config3 = MosaicConfig(
+        config3 = create_test_config_with_state(
+            state_dir=temp_state_dir,
             host="127.0.0.1",
             heartbeat_port=5030,
             comms_port=5031,
@@ -997,10 +1007,11 @@ class TestBeaconCollectStats:
                 beacon2.stop()
                 beacon3.stop()
 
-    def test_collect_stats_timeout_breaks_loop(self, beacon_config_no_ssl):
+    def test_collect_stats_timeout_breaks_loop(self, beacon_config_no_ssl, temp_state_dir):
         """Test that collect_stats breaks when timeout is exceeded."""
         # Create configs for 3 beacons
-        config1 = MosaicConfig(
+        config1 = create_test_config_with_state(
+            state_dir=temp_state_dir,
             host="127.0.0.1",
             heartbeat_port=5010,
             comms_port=5011,
@@ -1014,7 +1025,8 @@ class TestBeaconCollectStats:
             benchmark_data_location="",
         )
 
-        config2 = MosaicConfig(
+        config2 = create_test_config_with_state(
+            state_dir=temp_state_dir,
             host="127.0.0.1",
             heartbeat_port=5020,
             comms_port=5021,
@@ -1028,7 +1040,8 @@ class TestBeaconCollectStats:
             benchmark_data_location="",
         )
 
-        config3 = MosaicConfig(
+        config3 = create_test_config_with_state(
+            state_dir=temp_state_dir,
             host="127.0.0.1",
             heartbeat_port=5030,
             comms_port=5031,

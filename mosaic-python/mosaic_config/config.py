@@ -51,6 +51,7 @@ class MosaicConfig:
     data_location: str = ""
     plans_location: str = "plans"
     models_location: str = "models"
+    state_location: str = ""
 
     @classmethod
     def from_dict(cls, config_dict: Dict[str, Any]) -> "MosaicConfig":
@@ -113,6 +114,7 @@ class MosaicConfig:
             data_location=config_dict.get("data_location", ""),
             plans_location=config_dict.get("plans_location", "plans"),
             models_location=config_dict.get("models_location", "models"),
+            state_location=config_dict.get("state_location", ""),
         )
 
 

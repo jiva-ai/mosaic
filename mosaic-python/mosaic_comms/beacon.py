@@ -12,6 +12,11 @@ from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Union
 
 from mosaic_config.config import MosaicConfig, Peer
+from mosaic_config.state_utils import (
+    StateIdentifiers,
+    read_state,
+    save_state,
+)
 from mosaic_planner.planner import (
     deserialize_plan_with_data,
     prepare_file_data_for_transmission,
@@ -79,8 +84,26 @@ class Beacon:
         self.stats_collector = StatsCollector(config)
 
         # Dictionary keyed by (host, heartbeat_port) for efficient lookup
-        self._send_heartbeat_statuses: Dict[tuple[str, int], SendHeartbeatStatus] = {}
-        self._receive_heartbeat_statuses: Dict[tuple[str, int], ReceiveHeartbeatStatus] = {}
+        # Try to load from saved state, otherwise initialize empty
+        loaded_send = read_state(
+            config, StateIdentifiers.SEND_HEARTBEAT_STATUSES, default=None
+        )
+        loaded_receive = read_state(
+            config, StateIdentifiers.RECEIVE_HEARTBEAT_STATUSES, default=None
+        )
+        
+        # Initialize from loaded state or empty dict
+        if isinstance(loaded_send, dict):
+            self._send_heartbeat_statuses: Dict[tuple[str, int], SendHeartbeatStatus] = loaded_send
+            logger.info(f"Loaded {len(loaded_send)} send heartbeat statuses from state")
+        else:
+            self._send_heartbeat_statuses: Dict[tuple[str, int], SendHeartbeatStatus] = {}
+        
+        if isinstance(loaded_receive, dict):
+            self._receive_heartbeat_statuses: Dict[tuple[str, int], ReceiveHeartbeatStatus] = loaded_receive
+            logger.info(f"Loaded {len(loaded_receive)} receive heartbeat statuses from state")
+        else:
+            self._receive_heartbeat_statuses: Dict[tuple[str, int], ReceiveHeartbeatStatus] = {}
 
         # Command handler registry
         # Handlers can accept Dict (JSON) or bytes (binary/pickled) payloads
@@ -223,6 +246,21 @@ class Beacon:
         while not self._stop_event.is_set():
             try:
                 self.run_send_heartbeats()
+                
+                # Save state after sending heartbeats
+                try:
+                    save_state(
+                        self.config,
+                        self._send_heartbeat_statuses,
+                        StateIdentifiers.SEND_HEARTBEAT_STATUSES,
+                    )
+                    save_state(
+                        self.config,
+                        self._receive_heartbeat_statuses,
+                        StateIdentifiers.RECEIVE_HEARTBEAT_STATUSES,
+                    )
+                except Exception as e:
+                    logger.warning(f"Failed to save heartbeat state: {e}")
             except Exception as e:
                 logger.error(f"Error in send heartbeat loop: {e}")
 
