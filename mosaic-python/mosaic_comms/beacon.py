@@ -196,11 +196,6 @@ class Beacon:
                      The function will be called with the command payload as argument.
                      Can return a value to send back to the caller.
         """
-        if not isinstance(command, str):
-            raise TypeError(f"Command must be a string, got {type(command)}")
-        if not callable(handler):
-            raise TypeError(f"Handler must be callable, got {type(handler)}")
-        
         self._command_handlers[command] = handler
         logger.debug(f"Registered command handler for '{command}'")
 
