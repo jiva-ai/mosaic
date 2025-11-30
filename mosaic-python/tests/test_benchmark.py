@@ -14,6 +14,7 @@ from mosaic_stats.benchmark import (
     _benchmark_cpu_flops,
     _benchmark_disk_speed,
     _benchmark_gpu_flops,
+    _benchmark_network_capacity,
     _benchmark_ram_speed,
     _get_hostname,
     benchmarks_captured,
@@ -393,6 +394,86 @@ class TestBenchmarkRamSpeed:
             assert "error" in result
 
 
+class TestBenchmarkNetworkCapacity:
+    """Test cases for _benchmark_network_capacity function."""
+
+    def test_benchmark_network_capacity_success(self):
+        """Test network capacity benchmark with valid psutil data."""
+        mock_stats = MagicMock()
+        mock_stats.isup = True
+        mock_stats.speed = 1000
+
+        mock_stats2 = MagicMock()
+        mock_stats2.isup = True
+        mock_stats2.speed = 500
+
+        mock_net_if_stats = {
+            "eth0": mock_stats,
+            "wlan0": mock_stats2,
+            "lo": MagicMock(isup=True, speed=0),  # Loopback with 0 speed
+        }
+
+        with patch("mosaic_stats.benchmark.psutil") as mock_psutil:
+            mock_psutil.net_if_stats.return_value = mock_net_if_stats
+            result = _benchmark_network_capacity()
+            assert result == 1500  # 1000 + 500
+
+    def test_benchmark_network_capacity_only_up_interfaces(self):
+        """Test that only up interfaces are counted."""
+        mock_stats = MagicMock()
+        mock_stats.isup = True
+        mock_stats.speed = 1000
+
+        mock_stats2 = MagicMock()
+        mock_stats2.isup = False  # Down interface
+        mock_stats2.speed = 500
+
+        mock_net_if_stats = {
+            "eth0": mock_stats,
+            "eth1": mock_stats2,
+        }
+
+        with patch("mosaic_stats.benchmark.psutil") as mock_psutil:
+            mock_psutil.net_if_stats.return_value = mock_net_if_stats
+            result = _benchmark_network_capacity()
+            assert result == 1000  # Only eth0 counted
+
+    def test_benchmark_network_capacity_zero_speed(self):
+        """Test that interfaces with zero speed are not counted."""
+        mock_stats = MagicMock()
+        mock_stats.isup = True
+        mock_stats.speed = 0
+
+        mock_net_if_stats = {
+            "eth0": mock_stats,
+        }
+
+        with patch("mosaic_stats.benchmark.psutil") as mock_psutil:
+            mock_psutil.net_if_stats.return_value = mock_net_if_stats
+            result = _benchmark_network_capacity()
+            assert result == 0
+
+    def test_benchmark_network_capacity_no_psutil(self):
+        """Test network capacity benchmark when psutil is not available."""
+        with patch("mosaic_stats.benchmark.psutil", None):
+            result = _benchmark_network_capacity()
+            assert result == 0
+
+    def test_benchmark_network_capacity_error_handling(self):
+        """Test network capacity benchmark error handling."""
+        with patch("mosaic_stats.benchmark.psutil") as mock_psutil:
+            mock_psutil.net_if_stats.side_effect = Exception("Network error")
+            result = _benchmark_network_capacity()
+            assert result == 0
+
+    def test_benchmark_network_capacity_empty_interfaces(self):
+        """Test network capacity benchmark with no interfaces."""
+        with patch("mosaic_stats.benchmark.psutil") as mock_psutil:
+            mock_psutil.net_if_stats.return_value = {}
+            result = _benchmark_network_capacity()
+            assert result == 0
+
+
 class TestRunBenchmarks:
     """Test cases for run_benchmarks function."""
 
@@ -403,12 +484,13 @@ class TestRunBenchmarks:
         ) as mock_disk, patch("mosaic_stats.benchmark._benchmark_cpu_flops") as mock_cpu, patch(
             "mosaic_stats.benchmark._benchmark_gpu_flops"
         ) as mock_gpu, patch("mosaic_stats.benchmark._benchmark_ram_speed") as mock_ram, patch(
-            "time.time_ns", return_value=1_000_000_000_000
-        ):
+            "mosaic_stats.benchmark._benchmark_network_capacity"
+        ) as mock_network, patch("time.time_ns", return_value=1_000_000_000_000):
             mock_disk.return_value = {"write_speed_mbps": 100.0, "read_speed_mbps": 150.0}
             mock_cpu.return_value = {"gflops": 50.0}
             mock_gpu.return_value = [{"gpu_id": 0, "gflops": 1000.0}]
             mock_ram.return_value = {"bandwidth_gbps": 20.0}
+            mock_network.return_value = 1000
 
             result = run_benchmarks(str(tmp_path))
 
@@ -419,6 +501,8 @@ class TestRunBenchmarks:
             assert "cpu" in result
             assert "gpus" in result
             assert "ram" in result
+            assert "network_capacity" in result
+            assert result["network_capacity"] == 1000
 
     def test_run_benchmarks_no_location(self):
         """Test running benchmarks with no location."""
@@ -426,15 +510,20 @@ class TestRunBenchmarks:
             "mosaic_stats.benchmark._benchmark_cpu_flops"
         ) as mock_cpu, patch("mosaic_stats.benchmark._benchmark_gpu_flops") as mock_gpu, patch(
             "mosaic_stats.benchmark._benchmark_ram_speed"
-        ) as mock_ram, patch("time.time_ns", return_value=1_000_000_000_000):
+        ) as mock_ram, patch("mosaic_stats.benchmark._benchmark_network_capacity") as mock_network, patch(
+            "time.time_ns", return_value=1_000_000_000_000
+        ):
             mock_cpu.return_value = {"gflops": 50.0}
             mock_gpu.return_value = []
             mock_ram.return_value = {"bandwidth_gbps": 20.0}
+            mock_network.return_value = 1000
 
             result = run_benchmarks("")
 
             assert "disk" in result
             assert "error" in result["disk"]
+            assert "network_capacity" in result
+            assert result["network_capacity"] == 1000
 
 
 class TestSaveBenchmarks:
@@ -577,6 +666,7 @@ class TestIntegration:
         assert "cpu" in results
         assert "gpus" in results
         assert "ram" in results
+        assert "network_capacity" in results
 
         # Save benchmarks
         saved_path = save_benchmarks(str(tmp_path), results)
@@ -590,6 +680,7 @@ class TestIntegration:
             saved_data = json.load(f)
             assert saved_data["host"] == results["host"]
             assert saved_data["timestamp_ms"] == results["timestamp_ms"]
+            assert "network_capacity" in saved_data
 
     def test_benchmark_file_format(self, tmp_path):
         """Test that benchmark file has correct format."""
@@ -600,6 +691,7 @@ class TestIntegration:
             "cpu": {"gflops": 50.0, "test_size": 1000, "iterations": 100},
             "gpus": [{"gpu_id": 0, "gflops": 1000.0, "type": "nvidia"}],
             "ram": {"bandwidth_gbps": 20.0, "test_size_mb": 10.0, "iterations": 100},
+            "network_capacity": 1000,
         }
 
         saved_path = save_benchmarks(str(tmp_path), test_results)
@@ -614,6 +706,8 @@ class TestIntegration:
         assert "cpu" in saved_data
         assert "gpus" in saved_data
         assert "ram" in saved_data
+        assert "network_capacity" in saved_data
+        assert saved_data["network_capacity"] == 1000
 
         # Verify nested structure
         assert "write_speed_mbps" in saved_data["disk"]
@@ -634,6 +728,7 @@ class TestLoadBenchmarks:
             "cpu": {"gflops": 75.8},
             "gpus": [{"gpu_id": 0, "gflops": 1200.5, "type": "nvidia"}],
             "ram": {"bandwidth_gbps": 25.5},
+            "network_capacity": 1000,
         }
 
         # Save the benchmark file
@@ -732,6 +827,7 @@ class TestLoadBenchmarks:
         assert result["gpus"][0]["gflops"] == 1200.5
         assert result["gpus"][1]["gflops"] == 1100.2
         assert result["ram"]["bandwidth_gbps"] == 25.5
+        assert result["network_capacity"] == 1000
 
     def test_load_benchmarks_different_hostname(self, tmp_path):
         """Test that load_benchmarks uses correct hostname for file lookup."""

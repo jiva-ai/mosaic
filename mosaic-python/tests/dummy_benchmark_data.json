@@ -29,6 +29,7 @@
     "bandwidth_gbps": 25.5,
     "test_size_mb": 10.0,
     "iterations": 100
-  }
+  },
+  "network_capacity": 1000
 }
 

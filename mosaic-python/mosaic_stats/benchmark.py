@@ -596,6 +596,30 @@ def _benchmark_ram_speed() -> Dict[str, Any]:
         return {"error": str(e)}
 
 
+def _benchmark_network_capacity() -> int:
+    """
+    Benchmark network capacity by summing up all network interface speeds.
+
+    Returns:
+        Total network capacity in Mbps (sum of all interface speeds), or 0 on error
+    """
+    try:
+        if psutil is None:
+            return 0
+
+        net_stats = psutil.net_if_stats()
+        total_speed = 0
+
+        for stats in net_stats.values():
+            if stats.isup and stats.speed > 0:
+                total_speed += stats.speed
+
+        return total_speed
+    except Exception as e:
+        logger.warning(f"Network capacity benchmark failed: {e}")
+        return 0
+
+
 def run_benchmarks(benchmark_data_location: str) -> Dict[str, Any]:
     """
     Run all benchmark tests and return results.
@@ -615,6 +639,7 @@ def run_benchmarks(benchmark_data_location: str) -> Dict[str, Any]:
         "cpu": _benchmark_cpu_flops(),
         "gpus": _benchmark_gpu_flops(),
         "ram": _benchmark_ram_speed(),
+        "network_capacity": _benchmark_network_capacity(),
     }
 
     return results
