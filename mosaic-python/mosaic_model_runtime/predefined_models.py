@@ -1,7 +1,7 @@
 """Functions to create various models and convert them to ONNX format."""
 
-import tempfile
 from pathlib import Path
+from typing import Union
 
 import onnx
 import torch
@@ -9,18 +9,25 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 
-def create_resnet50_onnx() -> bytes:
+def create_resnet50_onnx(output_dir: Union[str, Path]) -> str:
     """
     Create a ResNet-50 model and convert it to ONNX format.
     
+    Args:
+        output_dir: Directory path where the ONNX file will be saved
+        
     Returns:
-        bytes: The ONNX model representation as bytes
+        str: The filename of the created ONNX file (relative to output_dir)
         
     Raises:
         Exception: If model creation or validation fails
     """
     try:
         import torchvision.models as models
+        
+        # Ensure output directory exists
+        output_path = Path(output_dir)
+        output_path.mkdir(parents=True, exist_ok=True)
         
         # Load the pre-trained ResNet-50 model
         model = models.resnet50(weights="IMAGENET1K_V1")
@@ -29,52 +36,51 @@ def create_resnet50_onnx() -> bytes:
         # Create dummy input matching the model's input dimensions
         dummy_input = torch.randn(1, 3, 224, 224)
         
-        # Export to ONNX using temporary file
-        with tempfile.NamedTemporaryFile(suffix=".onnx", delete=False) as tmp_file:
-            onnx_path = tmp_file.name
+        # Create ONNX file path
+        filename = "resnet50.onnx"
+        onnx_path = output_path / filename
         
-        try:
-            torch.onnx.export(
-                model,
-                dummy_input,
-                onnx_path,
-                opset_version=14,
-                input_names=["input"],
-                output_names=["output"],
-                dynamic_axes={"input": {0: "batch_size"}, "output": {0: "batch_size"}},
-            )
-            
-            # Load and validate the ONNX model
-            onnx_model = onnx.load(onnx_path)
-            onnx.checker.check_model(onnx_model)
-            
-            # Read the ONNX model as bytes
-            with open(onnx_path, "rb") as f:
-                onnx_bytes = f.read()
-            
-            return onnx_bytes
-        finally:
-            # Clean up temporary file
-            Path(onnx_path).unlink(missing_ok=True)
+        torch.onnx.export(
+            model,
+            dummy_input,
+            str(onnx_path),
+            opset_version=14,
+            input_names=["input"],
+            output_names=["output"],
+            dynamic_axes={"input": {0: "batch_size"}, "output": {0: "batch_size"}},
+        )
+        
+        # Load and validate the ONNX model
+        onnx_model = onnx.load(str(onnx_path))
+        onnx.checker.check_model(onnx_model)
+        
+        return filename
     except Exception as e:
         raise Exception(f"Failed to create ResNet-50 ONNX model: {e}") from e
 
 
-def create_resnet101_onnx() -> bytes:
+def create_resnet101_onnx(output_dir: Union[str, Path]) -> str:
     """
     Create a ResNet-101 model and convert it to ONNX format.
     
     Note: ResNet-102 doesn't exist in standard torchvision. This function creates
     ResNet-101, which is the closest standard variant.
     
+    Args:
+        output_dir: Directory path where the ONNX file will be saved
+        
     Returns:
-        bytes: The ONNX model representation as bytes
+        str: The filename of the created ONNX file (relative to output_dir)
         
     Raises:
         Exception: If model creation or validation fails
     """
     try:
         import torchvision.models as models
+        
+        # Ensure output directory exists
+        output_path = Path(output_dir)
+        output_path.mkdir(parents=True, exist_ok=True)
         
         # Load the pre-trained ResNet-101 model
         model = models.resnet101(weights="IMAGENET1K_V1")
@@ -83,49 +89,48 @@ def create_resnet101_onnx() -> bytes:
         # Create dummy input matching the model's input dimensions
         dummy_input = torch.randn(1, 3, 224, 224)
         
-        # Export to ONNX using temporary file
-        with tempfile.NamedTemporaryFile(suffix=".onnx", delete=False) as tmp_file:
-            onnx_path = tmp_file.name
+        # Create ONNX file path
+        filename = "resnet101.onnx"
+        onnx_path = output_path / filename
         
-        try:
-            torch.onnx.export(
-                model,
-                dummy_input,
-                onnx_path,
-                opset_version=14,
-                input_names=["input"],
-                output_names=["output"],
-                dynamic_axes={"input": {0: "batch_size"}, "output": {0: "batch_size"}},
-            )
-            
-            # Load and validate the ONNX model
-            onnx_model = onnx.load(onnx_path)
-            onnx.checker.check_model(onnx_model)
-            
-            # Read the ONNX model as bytes
-            with open(onnx_path, "rb") as f:
-                onnx_bytes = f.read()
-            
-            return onnx_bytes
-        finally:
-            # Clean up temporary file
-            Path(onnx_path).unlink(missing_ok=True)
+        torch.onnx.export(
+            model,
+            dummy_input,
+            str(onnx_path),
+            opset_version=14,
+            input_names=["input"],
+            output_names=["output"],
+            dynamic_axes={"input": {0: "batch_size"}, "output": {0: "batch_size"}},
+        )
+        
+        # Load and validate the ONNX model
+        onnx_model = onnx.load(str(onnx_path))
+        onnx.checker.check_model(onnx_model)
+        
+        return filename
     except Exception as e:
         raise Exception(f"Failed to create ResNet-101 ONNX model: {e}") from e
 
 
-def create_wav2vec2_onnx() -> bytes:
+def create_wav2vec2_onnx(output_dir: Union[str, Path]) -> str:
     """
     Create a Wav2Vec2 model and convert it to ONNX format.
     
+    Args:
+        output_dir: Directory path where the ONNX file will be saved
+        
     Returns:
-        bytes: The ONNX model representation as bytes
+        str: The filename of the created ONNX file (relative to output_dir)
         
     Raises:
         Exception: If model creation or validation fails
     """
     try:
         from transformers import Wav2Vec2Model
+        
+        # Ensure output directory exists
+        output_path = Path(output_dir)
+        output_path.mkdir(parents=True, exist_ok=True)
         
         # Load the pre-trained Wav2Vec2 model
         model = Wav2Vec2Model.from_pretrained("facebook/wav2vec2-base-960h")
@@ -135,52 +140,51 @@ def create_wav2vec2_onnx() -> bytes:
         # Wav2Vec2 expects audio waveform input
         dummy_input = torch.randn(1, 16000)
         
-        # Export to ONNX using temporary file
-        with tempfile.NamedTemporaryFile(suffix=".onnx", delete=False) as tmp_file:
-            onnx_path = tmp_file.name
+        # Create ONNX file path
+        filename = "wav2vec2.onnx"
+        onnx_path = output_path / filename
         
-        try:
-            torch.onnx.export(
-                model,
-                dummy_input,
-                onnx_path,
-                opset_version=14,
-                input_names=["input_values"],
-                output_names=["last_hidden_state"],
-                dynamic_axes={
-                    "input_values": {0: "batch_size", 1: "sequence_length"},
-                    "last_hidden_state": {0: "batch_size", 1: "sequence_length"},
-                },
-            )
-            
-            # Load and validate the ONNX model
-            onnx_model = onnx.load(onnx_path)
-            onnx.checker.check_model(onnx_model)
-            
-            # Read the ONNX model as bytes
-            with open(onnx_path, "rb") as f:
-                onnx_bytes = f.read()
-            
-            return onnx_bytes
-        finally:
-            # Clean up temporary file
-            Path(onnx_path).unlink(missing_ok=True)
+        torch.onnx.export(
+            model,
+            dummy_input,
+            str(onnx_path),
+            opset_version=14,
+            input_names=["input_values"],
+            output_names=["last_hidden_state"],
+            dynamic_axes={
+                "input_values": {0: "batch_size", 1: "sequence_length"},
+                "last_hidden_state": {0: "batch_size", 1: "sequence_length"},
+            },
+        )
+        
+        # Load and validate the ONNX model
+        onnx_model = onnx.load(str(onnx_path))
+        onnx.checker.check_model(onnx_model)
+        
+        return filename
     except Exception as e:
         raise Exception(f"Failed to create Wav2Vec2 ONNX model: {e}") from e
 
 
-def create_gpt_neo_onnx() -> bytes:
+def create_gpt_neo_onnx(output_dir: Union[str, Path]) -> str:
     """
     Create a GPT-Neo model and convert it to ONNX format.
     
+    Args:
+        output_dir: Directory path where the ONNX file will be saved
+        
     Returns:
-        bytes: The ONNX model representation as bytes
+        str: The filename of the created ONNX file (relative to output_dir)
         
     Raises:
         Exception: If model creation or validation fails
     """
     try:
         from transformers import GPTNeoForCausalLM
+        
+        # Ensure output directory exists
+        output_path = Path(output_dir)
+        output_path.mkdir(parents=True, exist_ok=True)
         
         # Load a smaller GPT-Neo model for easier conversion
         # Using 125M version for faster download and conversion
@@ -207,53 +211,52 @@ def create_gpt_neo_onnx() -> bytes:
         # GPT-Neo expects token IDs
         dummy_input = torch.randint(0, model.config.vocab_size, (1, 10))
         
-        # Export to ONNX using temporary file
-        with tempfile.NamedTemporaryFile(suffix=".onnx", delete=False) as tmp_file:
-            onnx_path = tmp_file.name
+        # Create ONNX file path
+        filename = "gpt-neo.onnx"
+        onnx_path = output_path / filename
         
-        try:
-            torch.onnx.export(
-                wrapped_model,
-                dummy_input,
-                onnx_path,
-                opset_version=18,
-                input_names=["input_ids"],
-                output_names=["logits"],
-                dynamic_axes={
-                    "input_ids": {0: "batch_size", 1: "sequence_length"},
-                    "logits": {0: "batch_size", 1: "sequence_length"},
-                },
-            )
-            
-            # Load and validate the ONNX model
-            onnx_model = onnx.load(onnx_path)
-            onnx.checker.check_model(onnx_model)
-            
-            # Read the ONNX model as bytes
-            with open(onnx_path, "rb") as f:
-                onnx_bytes = f.read()
-            
-            return onnx_bytes
-        finally:
-            # Clean up temporary file
-            Path(onnx_path).unlink(missing_ok=True)
+        torch.onnx.export(
+            wrapped_model,
+            dummy_input,
+            str(onnx_path),
+            opset_version=18,
+            input_names=["input_ids"],
+            output_names=["logits"],
+            dynamic_axes={
+                "input_ids": {0: "batch_size", 1: "sequence_length"},
+                "logits": {0: "batch_size", 1: "sequence_length"},
+            },
+        )
+        
+        # Load and validate the ONNX model
+        onnx_model = onnx.load(str(onnx_path))
+        onnx.checker.check_model(onnx_model)
+        
+        return filename
     except Exception as e:
         raise Exception(f"Failed to create GPT-Neo ONNX model: {e}") from e
 
 
-def create_gcn_onnx() -> bytes:
+def create_gcn_onnx(output_dir: Union[str, Path]) -> str:
     """
     Create a Graph Convolutional Network (GCN) model for ogbn-arxiv
     and convert it to ONNX format.
     
+    Args:
+        output_dir: Directory path where the ONNX file will be saved
+        
     Returns:
-        bytes: The ONNX model representation as bytes
+        str: The filename of the created ONNX file (relative to output_dir)
         
     Raises:
         Exception: If model creation or validation fails
     """
     try:
         from torch_geometric.nn import GCNConv
+        
+        # Ensure output directory exists
+        output_path = Path(output_dir)
+        output_path.mkdir(parents=True, exist_ok=True)
         
         class GCN(nn.Module):
             """Graph Convolutional Network for node classification."""
@@ -294,54 +297,53 @@ def create_gcn_onnx() -> bytes:
         dummy_x = torch.randn(num_nodes, num_features)
         dummy_edge_index = torch.randint(0, num_nodes, (2, num_edges), dtype=torch.long)
         
-        # Export to ONNX using temporary file
-        with tempfile.NamedTemporaryFile(suffix=".onnx", delete=False) as tmp_file:
-            onnx_path = tmp_file.name
+        # Create ONNX file path
+        filename = "gcn-ogbn-arxiv.onnx"
+        onnx_path = output_path / filename
         
-        try:
-            torch.onnx.export(
-                model,
-                (dummy_x, dummy_edge_index),
-                onnx_path,
-                opset_version=14,
-                input_names=["x", "edge_index"],
-                output_names=["output"],
-                dynamic_axes={
-                    "x": {0: "num_nodes"},
-                    "edge_index": {1: "num_edges"},
-                    "output": {0: "num_nodes"},
-                },
-            )
-            
-            # Load and validate the ONNX model
-            onnx_model = onnx.load(onnx_path)
-            onnx.checker.check_model(onnx_model)
-            
-            # Read the ONNX model as bytes
-            with open(onnx_path, "rb") as f:
-                onnx_bytes = f.read()
-            
-            return onnx_bytes
-        finally:
-            # Clean up temporary file
-            Path(onnx_path).unlink(missing_ok=True)
+        torch.onnx.export(
+            model,
+            (dummy_x, dummy_edge_index),
+            str(onnx_path),
+            opset_version=14,
+            input_names=["x", "edge_index"],
+            output_names=["output"],
+            dynamic_axes={
+                "x": {0: "num_nodes"},
+                "edge_index": {1: "num_edges"},
+                "output": {0: "num_nodes"},
+            },
+        )
+        
+        # Load and validate the ONNX model
+        onnx_model = onnx.load(str(onnx_path))
+        onnx.checker.check_model(onnx_model)
+        
+        return filename
     except Exception as e:
         raise Exception(f"Failed to create GCN ONNX model: {e}") from e
 
 
-def create_biggan_onnx() -> bytes:
+def create_biggan_onnx(output_dir: Union[str, Path]) -> str:
     """
     Create a BigGAN generator model and convert it to ONNX format.
     
     This implements a simplified BigGAN generator architecture suitable for ONNX export.
     
+    Args:
+        output_dir: Directory path where the ONNX file will be saved
+        
     Returns:
-        bytes: The ONNX model representation as bytes
+        str: The filename of the created ONNX file (relative to output_dir)
         
     Raises:
         Exception: If model creation or validation fails
     """
     try:
+        # Ensure output directory exists
+        output_path = Path(output_dir)
+        output_path.mkdir(parents=True, exist_ok=True)
+        
         class BigGANGenerator(nn.Module):
             """
             Simplified BigGAN Generator architecture.
@@ -410,53 +412,52 @@ def create_biggan_onnx() -> bytes:
         noise = torch.randn(batch_size, z_dim)
         class_labels = torch.randint(0, num_classes, (batch_size,))
         
-        # Export to ONNX using temporary file
-        with tempfile.NamedTemporaryFile(suffix=".onnx", delete=False) as tmp_file:
-            onnx_path = tmp_file.name
+        # Create ONNX file path
+        filename = "biggan.onnx"
+        onnx_path = output_path / filename
         
-        try:
-            torch.onnx.export(
-                model,
-                (noise, class_labels),
-                onnx_path,
-                opset_version=14,
-                input_names=["noise", "class_labels"],
-                output_names=["output"],
-                dynamic_axes={
-                    "noise": {0: "batch_size"},
-                    "class_labels": {0: "batch_size"},
-                    "output": {0: "batch_size"},
-                },
-            )
-            
-            # Load and validate the ONNX model
-            onnx_model = onnx.load(onnx_path)
-            onnx.checker.check_model(onnx_model)
-            
-            # Read the ONNX model as bytes
-            with open(onnx_path, "rb") as f:
-                onnx_bytes = f.read()
-            
-            return onnx_bytes
-        finally:
-            # Clean up temporary file
-            Path(onnx_path).unlink(missing_ok=True)
+        torch.onnx.export(
+            model,
+            (noise, class_labels),
+            str(onnx_path),
+            opset_version=14,
+            input_names=["noise", "class_labels"],
+            output_names=["output"],
+            dynamic_axes={
+                "noise": {0: "batch_size"},
+                "class_labels": {0: "batch_size"},
+                "output": {0: "batch_size"},
+            },
+        )
+        
+        # Load and validate the ONNX model
+        onnx_model = onnx.load(str(onnx_path))
+        onnx.checker.check_model(onnx_model)
+        
+        return filename
     except Exception as e:
         raise Exception(f"Failed to create BigGAN ONNX model: {e}") from e
 
 
-def create_ppo_onnx() -> bytes:
+def create_ppo_onnx(output_dir: Union[str, Path]) -> str:
     """
     Create a PPO (Proximal Policy Optimization) policy network
     and convert it to ONNX format.
     
+    Args:
+        output_dir: Directory path where the ONNX file will be saved
+        
     Returns:
-        bytes: The ONNX model representation as bytes
+        str: The filename of the created ONNX file (relative to output_dir)
         
     Raises:
         Exception: If model creation or validation fails
     """
     try:
+        # Ensure output directory exists
+        output_path = Path(output_dir)
+        output_path.mkdir(parents=True, exist_ok=True)
+        
         class PPOPolicy(nn.Module):
             """
             PPO Policy Network.
@@ -494,36 +495,28 @@ def create_ppo_onnx() -> bytes:
         # Create dummy input matching typical observation space
         dummy_input = torch.randn(1, input_dim)
         
-        # Export to ONNX using temporary file
-        with tempfile.NamedTemporaryFile(suffix=".onnx", delete=False) as tmp_file:
-            onnx_path = tmp_file.name
+        # Create ONNX file path
+        filename = "ppo.onnx"
+        onnx_path = output_path / filename
         
-        try:
-            torch.onnx.export(
-                model,
-                dummy_input,
-                onnx_path,
-                opset_version=14,
-                input_names=["observation"],
-                output_names=["action_logits"],
-                dynamic_axes={
-                    "observation": {0: "batch_size"},
-                    "action_logits": {0: "batch_size"},
-                },
-            )
-            
-            # Load and validate the ONNX model
-            onnx_model = onnx.load(onnx_path)
-            onnx.checker.check_model(onnx_model)
-            
-            # Read the ONNX model as bytes
-            with open(onnx_path, "rb") as f:
-                onnx_bytes = f.read()
-            
-            return onnx_bytes
-        finally:
-            # Clean up temporary file
-            Path(onnx_path).unlink(missing_ok=True)
+        torch.onnx.export(
+            model,
+            dummy_input,
+            str(onnx_path),
+            opset_version=14,
+            input_names=["observation"],
+            output_names=["action_logits"],
+            dynamic_axes={
+                "observation": {0: "batch_size"},
+                "action_logits": {0: "batch_size"},
+            },
+        )
+        
+        # Load and validate the ONNX model
+        onnx_model = onnx.load(str(onnx_path))
+        onnx.checker.check_model(onnx_model)
+        
+        return filename
     except Exception as e:
         raise Exception(f"Failed to create PPO ONNX model: {e}") from e
 
