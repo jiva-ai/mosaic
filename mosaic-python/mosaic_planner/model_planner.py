@@ -1,5 +1,6 @@
 """Model planning functions for compressing ONNX models based on node capabilities."""
 
+import io
 import logging
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
@@ -29,7 +30,8 @@ def _load_onnx_model(model: Model, config: Optional[MosaicConfig] = None) -> onn
         ValueError: If model cannot be loaded
     """
     if model.binary_rep is not None:
-        return onnx.load_from_string(model.binary_rep)
+        # binary_rep is bytes from reading an ONNX file, so we use BytesIO to load it
+        return onnx.load(io.BytesIO(model.binary_rep))
     
     if model.onnx_location is None or model.file_name is None:
         raise ValueError(

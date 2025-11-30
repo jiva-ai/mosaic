@@ -153,6 +153,7 @@ class Model:
     onnx_location: Optional[str] = None  # Relative to MosaicConfig's models_location
     binary_rep: Optional[bytes] = None  # ONNX model loaded from onnx_location
     file_name: Optional[str] = None  # File name of the model (automatically sanitized)
+    trained: bool = False  # Whether the model has been trained
     
     def __post_init__(self):
         """Sanitize file_name after initialization if it's set."""
@@ -212,6 +213,7 @@ class Session:
 
     plan: Plan
     data: Optional["Data"] = None
+    model: Optional["Model"] = None
     time_started: int = field(init=False)  # Millis since epoch
     time_ended: int = -1  # Millis since epoch, -1 means not finished
     status: SessionStatus = SessionStatus.IDLE  # Session status
@@ -221,6 +223,7 @@ class Session:
         self,
         plan: Plan,
         data: Optional["Data"] = None,
+        model: Optional["Model"] = None,
         time_started: Optional[int] = None,
         time_ended: int = -1,
         status: SessionStatus = SessionStatus.IDLE,
@@ -232,6 +235,7 @@ class Session:
         Args:
             plan: Plan instance
             data: Optional Data instance associated with this session
+            model: Optional Model instance associated with this session
             time_started: Optional start time in millis since epoch. Defaults to current time.
             time_ended: End time in millis since epoch. Defaults to -1 (not finished).
             status: Session status. Defaults to SessionStatus.IDLE.
@@ -239,6 +243,7 @@ class Session:
         """
         self.plan = plan
         self.data = data
+        self.model = model
         self.time_started = time_started if time_started is not None else int(time.time() * 1000)
         self.time_ended = time_ended
         self.status = status
