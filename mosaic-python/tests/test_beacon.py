@@ -1345,3 +1345,278 @@ class TestBeaconCollectStats:
             except OSError:
                 pass
 
+    def test_large_directory_transfer_with_chunking(self, temp_state_dir):
+        """Test transferring a 16MB directory between 2 beacons with chunking."""
+        import time
+        import random
+        import shutil
+        from pathlib import Path
+        from mosaic_planner.planner import get_directory_size
+        from mosaic_planner.state import Data, DataType, FileDefinition, Model, Plan
+        
+        # Set up test_data directory
+        test_data_dir = Path(__file__).parent / 'test_data'
+        test_data_dir.mkdir(exist_ok=True)
+        
+        # Create source directory name
+        source_dir_name = "large_test_dir"
+        source_dir = test_data_dir / source_dir_name
+        
+        # Check if directory exists, if not create it
+        if not source_dir.exists():
+            source_dir.mkdir(exist_ok=True)
+            
+            # Create files of varying sizes with random bytes (don't compress well)
+            # Create a larger directory to ensure chunking even after compression
+            # Total size should be large enough that even after compression, it exceeds chunk_size
+            # Use larger files to ensure we get multiple chunks
+            file_sizes = [
+                (20 * 1024 * 1024, "file_20mb.bin"),  # 20MB file
+                (15 * 1024 * 1024, "file_15mb.bin"),  # 15MB file
+                (10 * 1024 * 1024, "file_10mb.bin"),  # 10MB file
+                (5 * 1024 * 1024, "file_5mb.bin"),     # 5MB file
+                (2 * 1024 * 1024, "file_2mb.bin"),     # 2MB file
+                (512 * 1024, "file_512kb.bin"),        # 512KB file
+            ]
+            
+            # Generate random binary data (doesn't compress well)
+            # Use a fixed seed for reproducibility so files can be compared byte-for-byte
+            random.seed(42)
+            chunk_size = 1024 * 1024  # Write in 1MB chunks
+            
+            for size_bytes, filename in file_sizes:
+                file_path = source_dir / filename
+                with open(file_path, 'wb') as f:
+                    written = 0
+                    while written < size_bytes:
+                        bytes_to_write = min(chunk_size, size_bytes - written)
+                        # Generate random bytes
+                        random_data = bytes([random.randint(0, 255) for _ in range(bytes_to_write)])
+                        f.write(random_data)
+                        written += bytes_to_write
+        
+        # Verify directory exists and has files
+        total_size = get_directory_size(source_dir)
+        assert total_size > 0, "Source directory should contain files"
+        
+        # Count original files
+        original_files = list(source_dir.rglob('*'))
+        original_files = [f for f in original_files if f.is_file()]
+        original_file_count = len(original_files)
+        assert original_file_count > 0, "Source directory should contain at least one file"
+        
+        # Set up receiver directory (different location)
+        receiver_dir_name = "large_test_dir_received"
+        receiver_dir = test_data_dir / receiver_dir_name
+        # Clean up receiver directory (but not source directory as per requirements)
+        if receiver_dir.exists():
+            shutil.rmtree(receiver_dir)
+        
+        # Create configs for sender and receiver
+        # Use 2MB chunk size to force chunking
+        chunk_size_mb = 2
+        sender_config = create_test_config_with_state(
+            state_dir=temp_state_dir / "sender",
+            host="127.0.0.1",
+            heartbeat_port=6000,
+            comms_port=6001,
+            heartbeat_frequency=2,
+            heartbeat_tolerance=5,
+            heartbeat_wait_timeout=2,
+            stats_request_timeout=10,
+            server_crt="",
+            server_key="",
+            ca_crt="",
+            benchmark_data_location="",
+            data_location=str(test_data_dir),
+            data_chunk_size=chunk_size_mb,  # 2MB chunks
+        )
+        
+        receiver_config = create_test_config_with_state(
+            state_dir=temp_state_dir / "receiver",
+            host="127.0.0.1",
+            heartbeat_port=6002,
+            comms_port=6003,
+            heartbeat_frequency=2,
+            heartbeat_tolerance=5,
+            heartbeat_wait_timeout=2,
+            stats_request_timeout=10,
+            server_crt="",
+            server_key="",
+            ca_crt="",
+            benchmark_data_location="",
+            data_location=str(test_data_dir),
+            data_chunk_size=chunk_size_mb,  # 2MB chunks
+        )
+        
+        with patch("mosaic_comms.beacon.StatsCollector") as mock_stats_class:
+            mock_stats = MagicMock()
+            mock_stats.get_last_stats_json.return_value = '{"cpu_percent": 45.3}'
+            mock_stats_class.return_value = mock_stats
+            
+            # Create beacons
+            sender_beacon = Beacon(sender_config)
+            receiver_beacon = Beacon(receiver_config)
+            
+            sender_beacon.start()
+            receiver_beacon.start()
+            
+            try:
+                # Wait for beacons to start
+                time.sleep(1.0)
+                
+                # Create Plan with data_segmentation_plan pointing to receiver
+                model = Model(name="test_model")
+                plan = Plan(
+                    stats_data=[],
+                    distribution_plan=[],
+                    model=model,
+                    data_segmentation_plan=[{
+                        "host": receiver_config.host,
+                        "comms_port": receiver_config.comms_port,
+                        "fraction": 1.0,
+                        "segments": [{
+                            "file_location": source_dir_name,  # Source location
+                            "data_type": "dir",
+                            "is_segmentable": False,  # Send entire directory
+                        }],
+                    }],
+                )
+                
+                # Create Data with directory definition (source location)
+                file_def = FileDefinition(
+                    location=source_dir_name,
+                    data_type=DataType.DIR,
+                    is_segmentable=False,  # Send entire directory
+                )
+                data = Data(file_definitions=[file_def])
+                
+                # Patch both handlers to extract to receiver directory instead
+                # Create a shared function to copy extracted files (not move, to preserve source)
+                def copy_extracted_files():
+                    """Copy extracted files to receiver directory."""
+                    extracted_dir = test_data_dir / source_dir_name
+                    if extracted_dir.exists() and extracted_dir != receiver_dir:
+                        if receiver_dir.exists():
+                            shutil.rmtree(receiver_dir)
+                        # Copy the extracted directory to receiver location (not move, to preserve source)
+                        shutil.copytree(extracted_dir, receiver_dir)
+                
+                # Patch _handle_execute_data_plan (for non-chunked data)
+                original_handler = receiver_beacon._handle_execute_data_plan
+                def patched_handler(payload):
+                    result = original_handler(payload)
+                    copy_extracted_files()
+                    return result
+                receiver_beacon._handle_execute_data_plan = patched_handler
+                receiver_beacon.register("exdplan", patched_handler)
+                
+                # Patch _handle_execute_data_plan_finalize (for chunked data)
+                original_finalize_handler = receiver_beacon._handle_execute_data_plan_finalize
+                def patched_finalize_handler(payload):
+                    result = original_finalize_handler(payload)
+                    copy_extracted_files()
+                    return result
+                receiver_beacon._handle_execute_data_plan_finalize = patched_finalize_handler
+                receiver_beacon.register("exdplan_finalize", patched_finalize_handler)
+                
+                # Track chunk sizes sent (mock send_command to capture chunk sizes)
+                chunk_sizes_sent = []
+                original_send_command = sender_beacon.send_command
+                
+                def track_send_command(host, port, command, payload, timeout=30.0):
+                    if command == "exdplan_chunk":
+                        # Extract chunk size from payload
+                        if isinstance(payload, bytes):
+                            # Payload is: header_length (4 bytes) + header + chunk_data
+                            header_length = int.from_bytes(payload[:4], byteorder="big")
+                            chunk_data = payload[4 + header_length:]
+                            chunk_sizes_sent.append(len(chunk_data))
+                    elif command == "exdplan":
+                        # Single chunk - entire payload is the data
+                        if isinstance(payload, bytes):
+                            chunk_sizes_sent.append(len(payload))
+                    return original_send_command(host, port, command, payload, timeout)
+                
+                sender_beacon.send_command = track_send_command
+                
+                # Execute data plan - track transmission time
+                transmission_start = time.time()
+                sender_beacon.execute_data_plan(plan, data)
+                transmission_end = time.time()
+                transmission_duration = transmission_end - transmission_start
+                
+                # Calculate total transmission time
+                total_transmission_time = transmission_duration
+                print(f"Data plan execution and transmission completed in {total_transmission_time:.2f} seconds")
+                
+                # Calculate total data size sent
+                total_data_sent = sum(chunk_sizes_sent)
+                
+                # Verify chunks were created correctly
+                chunk_size_bytes = sender_config.data_chunk_size * 1024 * 1024
+                for chunk_size in chunk_sizes_sent:
+                    assert chunk_size <= chunk_size_bytes, f"Chunk size {chunk_size / 1024 / 1024:.2f}MB exceeds data_chunk_size {sender_config.data_chunk_size}MB"
+                
+                # Verify chunks were sent
+                assert len(chunk_sizes_sent) > 0, "At least one chunk should have been sent"
+                
+                # Verify we got multiple chunks
+                # With compression, the data might compress significantly, but we should still get multiple chunks
+                # if the uncompressed size is large enough
+                # Note: If compression is very effective, we might only get 1 chunk, which is acceptable
+                # The important thing is that chunking works correctly when needed
+                if total_data_sent > chunk_size_bytes:
+                    assert len(chunk_sizes_sent) > 1, f"Expected multiple chunks for {total_data_sent / 1024 / 1024:.2f}MB data with {chunk_size_mb}MB chunk size, got {len(chunk_sizes_sent)} chunks"
+                else:
+                    # Data compressed to less than chunk size, single chunk is expected
+                    assert len(chunk_sizes_sent) == 1, f"Expected single chunk for {total_data_sent / 1024 / 1024:.2f}MB compressed data, got {len(chunk_sizes_sent)} chunks"
+                
+                # Verify chunk sizes are correct (each chunk should be close to chunk_size_bytes)
+                # Only check if we have multiple chunks
+                if len(chunk_sizes_sent) > 1:
+                    for i, chunk_size in enumerate(chunk_sizes_sent[:-1]):  # All except last
+                        # Chunks should be close to chunk_size_bytes (within 10% tolerance)
+                        assert chunk_size >= chunk_size_bytes * 0.9, f"Chunk {i+1} size {chunk_size / 1024 / 1024:.2f}MB is too small (expected ~{chunk_size_mb}MB)"
+                
+                # Verify memory protection: no chunk should exceed data_chunk_size
+                max_chunk_size = max(chunk_sizes_sent) if chunk_sizes_sent else 0
+                assert max_chunk_size <= chunk_size_bytes, f"Largest chunk {max_chunk_size / 1024 / 1024:.2f}MB exceeds data_chunk_size {chunk_size_mb}MB"
+                
+                # Verify receiver directory exists and contains all files
+                assert receiver_dir.exists(), "Receiver directory should exist"
+                
+                # List all files in receiver directory (recursively)
+                received_files = list(receiver_dir.rglob('*'))
+                received_files = [f for f in received_files if f.is_file()]
+                
+                # Assert that receiving directory contains the same number of files as original
+                assert len(received_files) == original_file_count, f"Expected {original_file_count} files, got {len(received_files)}"
+                
+                # Create mapping of relative paths to files
+                original_map = {f.relative_to(source_dir): f for f in original_files}
+                received_map = {f.relative_to(receiver_dir): f for f in received_files}
+                
+                # Assert that each file on the receiving end is created and is byte-for-byte equal to the original
+                for rel_path, original_file in original_map.items():
+                    assert rel_path in received_map, f"File {rel_path} not found in receiver directory"
+                    
+                    received_file = received_map[rel_path]
+                    
+                    # Verify byte-for-byte equality
+                    with open(original_file, 'rb') as f1, open(received_file, 'rb') as f2:
+                        original_data = f1.read()
+                        received_data = f2.read()
+                        assert original_data == received_data, f"File {rel_path} content does not match"
+                        
+                        # Verify file sizes match
+                        assert len(original_data) == len(received_data), f"File {rel_path} size does not match"
+                
+            finally:
+                sender_beacon.stop()
+                receiver_beacon.stop()
+                
+                # Clean up receiver directory (but not source directory as per requirements)
+                if receiver_dir.exists():
+                    shutil.rmtree(receiver_dir)
+

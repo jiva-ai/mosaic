@@ -1400,10 +1400,6 @@ class Beacon:
             
             logger.info(f"Received data plan with {len(data.file_definitions)} file definitions")
             
-            # The binary_data is already set in FileDefinition objects
-            # Store or process the data as needed
-            # For now, just log the receipt
-            
             # Process each file definition with memory-safe unzipping
             temp_dir = Path(self.config.data_location) / "temp_received"
             temp_dir.mkdir(parents=True, exist_ok=True)
