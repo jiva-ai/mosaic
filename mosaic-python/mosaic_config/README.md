@@ -57,7 +57,8 @@ The configuration file must be valid JSON with the following structure:
   "data_location": "/path/to/data",
   "plans_location": "plans",
   "models_location": "models",
-  "state_location": ""
+  "state_location": "",
+  "data_chunk_size": 256
 }
 ```
 
@@ -83,6 +84,7 @@ The configuration file must be valid JSON with the following structure:
 | `plans_location` | string | `"plans"` | Directory path where plans for data and model distribution are kept |
 | `models_location` | string | `"models"` | Directory path where model data is stored, such as ONNX files |
 | `state_location` | string | `""` | Directory path where current state is stored (defaults to current working directory if empty) |
+| `data_chunk_size` | integer | `256` | Size limit in megabytes for data transmission. Data smaller than this size will be sent in one go; larger data will be sent in chunks of this size |
 
 ### Peers Configuration
 
@@ -203,7 +205,8 @@ All other parameters will use their default values. This is suitable for testing
   "data_location": "/etc/mosaic/data",
   "plans_location": "plans",
   "models_location": "models",
-  "state_location": "/etc/mosaic/state"
+  "state_location": "/etc/mosaic/state",
+  "data_chunk_size": 256
 }
 ```
 

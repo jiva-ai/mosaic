@@ -52,6 +52,7 @@ class MosaicConfig:
     plans_location: str = "plans"
     models_location: str = "models"
     state_location: str = ""
+    data_chunk_size: int = 256  # Size in megabytes
 
     @classmethod
     def from_dict(cls, config_dict: Dict[str, Any]) -> "MosaicConfig":
@@ -115,6 +116,7 @@ class MosaicConfig:
             plans_location=config_dict.get("plans_location", "plans"),
             models_location=config_dict.get("models_location", "models"),
             state_location=config_dict.get("state_location", ""),
+            data_chunk_size=config_dict.get("data_chunk_size", 256),
         )
 
 
