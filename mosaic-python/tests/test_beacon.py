@@ -2575,3 +2575,388 @@ class TestBeaconCollectStats:
                     if test_csv.exists():
                         test_csv.unlink()
 
+    def test_handle_execute_model_plan_adds_model(self, temp_state_dir):
+        """Test that _handle_execute_model_plan correctly deserializes and adds a model."""
+        import gzip
+        import pickle
+        from pathlib import Path
+        from mosaic_planner.state import Model, ModelType
+        
+        # Set up test directory for models
+        test_models_dir = Path(__file__).parent / 'test_data' / 'test_models'
+        test_models_dir.mkdir(parents=True, exist_ok=True)
+        
+        config = create_test_config_with_state(
+            state_dir=temp_state_dir,
+            host="127.0.0.1",
+            heartbeat_port=5000,
+            comms_port=5001,
+            heartbeat_frequency=2,
+            heartbeat_tolerance=5,
+            heartbeat_wait_timeout=2,
+            stats_request_timeout=10,
+            server_crt="",
+            server_key="",
+            ca_crt="",
+            benchmark_data_location="",
+            data_location="",
+            models_location=str(test_models_dir),
+        )
+        
+        with patch("mosaic_comms.beacon.StatsCollector") as mock_stats_class:
+            mock_stats = MagicMock()
+            mock_stats.get_last_stats_json.return_value = '{"cpu_percent": 45.3}'
+            mock_stats_class.return_value = mock_stats
+            
+            beacon = Beacon(config)
+            
+            # Initialize mosaic config and models list
+            import mosaic.mosaic as mosaic_module
+            mosaic_module._config = config
+            from mosaic.mosaic import _models
+            initial_model_count = len(_models)
+            
+            # Create a test model with binary_rep
+            test_model_binary = b"fake_onnx_model_data_" + b"x" * 100  # Simulate ONNX model
+            model = Model(
+                name="test_model",
+                model_type=ModelType.CNN,
+                onnx_location="test_models",
+                file_name="test_model.onnx",
+                binary_rep=test_model_binary,
+            )
+            
+            # Store original binary_rep for comparison
+            original_binary_rep = model.binary_rep
+            
+            # Serialize model (same way execute_model_plan does)
+            pickled_model = pickle.dumps(model)
+            serialized_model = gzip.compress(pickled_model)
+            
+            # Call the handler with _config properly set using patch
+            with patch("mosaic.mosaic._config", config):
+                result = beacon._handle_execute_model_plan(serialized_model)
+                
+                # Verify result
+                assert result is not None
+                assert result["status"] == "success"
+                assert f"Model {model.name} added successfully" in result["message"]
+                
+                # Verify model was added to _models list
+                assert len(_models) == initial_model_count + 1, "One model should be added"
+                added_model = _models[-1]  # Get the most recently added model
+                assert added_model.name == model.name, "Model name should match"
+                assert added_model.model_type == model.model_type, "Model type should match"
+                
+                # Verify model was saved to disk
+                # add_model saves to models_location/onnx_location/sanitized_name
+                # where sanitized_name comes from _sanitize_filename(model.name)
+                # The file_name field is set by add_model to the sanitized name
+                assert added_model.file_name is not None, "file_name should be set by add_model"
+                
+                # Construct expected file path based on how add_model saves it
+                # add_model uses _sanitize_filename(model.name), not model.file_name
+                from mosaic.mosaic import _sanitize_filename
+                sanitized_name = _sanitize_filename(model.name)
+                
+                # Verify that added_model.file_name matches the sanitized name
+                assert added_model.file_name == sanitized_name, f"file_name should be sanitized: expected {sanitized_name}, got {added_model.file_name}"
+                
+                # Build the expected file path
+                if model.onnx_location:
+                    expected_file = test_models_dir / model.onnx_location / sanitized_name
+                else:
+                    expected_file = test_models_dir / sanitized_name
+                
+                # Debug: list all files if assertion fails
+                if not expected_file.exists():
+                    all_files = list(test_models_dir.rglob('*')) if test_models_dir.exists() else []
+                    file_list = [str(f.relative_to(test_models_dir)) for f in all_files if f.is_file()]
+                    assert False, (
+                        f"Model file should be saved to {expected_file}, but it doesn't exist. "
+                        f"Expected path: {expected_file}. "
+                        f"Files found in {test_models_dir}: {file_list}"
+                    )
+                
+                # Verify file content matches original binary_rep (byte-for-byte)
+                with open(expected_file, 'rb') as f:
+                    saved_data = f.read()
+                assert saved_data == original_binary_rep, "Saved model binary should match original binary_rep byte-for-byte"
+                assert saved_data == test_model_binary, "Saved model binary should match original test data byte-for-byte"
+                assert len(saved_data) == len(original_binary_rep), "Saved file size should match original binary_rep size"
+                
+                # Verify binary_rep was cleared after saving (to conserve memory)
+                assert added_model.binary_rep is None, "binary_rep should be cleared after saving"
+                
+                # Additional verification: deserialize the model again to verify binary_rep was preserved during serialization
+                # This ensures the round-trip serialization/deserialization doesn't corrupt the binary_rep
+                deserialized_pickled = gzip.decompress(serialized_model)
+                deserialized_model = pickle.loads(deserialized_pickled)
+                assert deserialized_model.binary_rep == original_binary_rep, "Deserialized binary_rep should match original byte-for-byte"
+                assert deserialized_model.binary_rep == saved_data, "Deserialized binary_rep should match saved file byte-for-byte"
+            
+            # Clean up
+            if test_models_dir.exists():
+                import shutil
+                shutil.rmtree(test_models_dir)
+
+    def test_execute_model_plan_transmits_model(self, temp_state_dir):
+        """Test that execute_model_plan transmits a model from one beacon to another."""
+        from pathlib import Path
+        from mosaic_planner.state import Model, ModelType, Plan, Session, SessionStatus
+        
+        # Set up test directories
+        test_models_dir = Path(__file__).parent / 'test_data' / 'test_models_transmit'
+        test_models_dir.mkdir(parents=True, exist_ok=True)
+        
+        sender_models_dir = test_models_dir / "sender"
+        receiver_models_dir = test_models_dir / "receiver"
+        sender_models_dir.mkdir(parents=True, exist_ok=True)
+        receiver_models_dir.mkdir(parents=True, exist_ok=True)
+        
+        # Create sender config
+        sender_config = create_test_config_with_state(
+            state_dir=temp_state_dir / "sender",
+            host="127.0.0.1",
+            heartbeat_port=9000,
+            comms_port=9001,
+            heartbeat_frequency=2,
+            heartbeat_tolerance=5,
+            heartbeat_wait_timeout=2,
+            stats_request_timeout=10,
+            server_crt="",
+            server_key="",
+            ca_crt="",
+            benchmark_data_location="",
+            data_location="",
+            models_location=str(sender_models_dir),
+        )
+        
+        # Create receiver config
+        receiver_config = create_test_config_with_state(
+            state_dir=temp_state_dir / "receiver",
+            host="127.0.0.1",
+            heartbeat_port=9002,
+            comms_port=9003,
+            heartbeat_frequency=2,
+            heartbeat_tolerance=5,
+            heartbeat_wait_timeout=2,
+            stats_request_timeout=10,
+            server_crt="",
+            server_key="",
+            ca_crt="",
+            benchmark_data_location="",
+            data_location="",
+            models_location=str(receiver_models_dir),
+        )
+        
+        with patch("mosaic_comms.beacon.StatsCollector") as mock_stats_class:
+            mock_stats = MagicMock()
+            mock_stats.get_last_stats_json.return_value = '{"cpu_percent": 45.3}'
+            mock_stats_class.return_value = mock_stats
+            
+            # Create beacons
+            sender_beacon = Beacon(sender_config)
+            receiver_beacon = Beacon(receiver_config)
+            
+            # Initialize mosaic config for receiver
+            from mosaic.mosaic import _config, _models
+            import mosaic.mosaic as mosaic_module
+            mosaic_module._config = receiver_config
+            initial_model_count = len(_models)
+            
+            # Create a test model file on sender
+            test_model_binary = b"fake_onnx_model_data_" + b"y" * 200  # Simulate ONNX model
+            model_file = sender_models_dir / "test_model.onnx"
+            with open(model_file, 'wb') as f:
+                f.write(test_model_binary)
+            
+            # Create model with onnx_location and file_name (binary_rep will be loaded)
+            model = Model(
+                name="transmitted_model",
+                model_type=ModelType.TRANSFORMER,
+                onnx_location="",  # Empty means root of models_location
+                file_name="test_model.onnx",
+            )
+            
+            # Create a plan with distribution_plan
+            plan = Plan(
+                stats_data=[],
+                distribution_plan=[
+                    {
+                        "host": receiver_config.host,
+                        "comms_port": receiver_config.comms_port,
+                        "capacity_fraction": 1.0,
+                    }
+                ],
+                model=model,
+            )
+            
+            # Create a session
+            session = Session(plan=plan, status=SessionStatus.RUNNING)
+            
+            # Mock send_command on sender to capture the payload and call receiver handler
+            received_payload = None
+            
+            def mock_send_command(host, port, command, payload=None, timeout=None):
+                nonlocal received_payload
+                if command == "exmplan" and host == receiver_config.host and port == receiver_config.comms_port:
+                    received_payload = payload
+                    # Call receiver handler directly with _config properly set
+                    with patch("mosaic.mosaic._config", receiver_config):
+                        return receiver_beacon._handle_execute_model_plan(payload)
+                return {"status": "success"}
+            
+            sender_beacon.send_command = mock_send_command
+            
+            try:
+                # Execute model plan
+                sender_beacon.execute_model_plan(session, model)
+                
+                # Verify payload was sent
+                assert received_payload is not None, "Model payload should have been sent"
+                
+                # Verify model was added to receiver's _models list
+                assert len(_models) == initial_model_count + 1, "One model should be added to receiver"
+                received_model = _models[-1]
+                assert received_model.name == "transmitted_model", "Model name should match"
+                assert received_model.model_type == ModelType.TRANSFORMER, "Model type should match"
+                
+                # Verify model was saved to disk on receiver
+                # add_model saves to models_location/onnx_location/sanitized_name
+                # where sanitized_name comes from _sanitize_filename(model.name)
+                from mosaic.mosaic import _sanitize_filename
+                sanitized_name = _sanitize_filename(model.name)
+                
+                # Verify that received_model.file_name matches the sanitized name
+                assert received_model.file_name == sanitized_name, f"file_name should be sanitized: expected {sanitized_name}, got {received_model.file_name}"
+                
+                # Build the expected file path
+                if model.onnx_location:
+                    expected_file = receiver_models_dir / model.onnx_location / sanitized_name
+                else:
+                    expected_file = receiver_models_dir / sanitized_name
+                
+                assert expected_file.exists(), f"Model file should be saved to {expected_file}"
+                
+                # Verify file content matches original
+                with open(expected_file, 'rb') as f:
+                    saved_data = f.read()
+                assert saved_data == test_model_binary, "Saved model binary should match original"
+                
+                # Verify binary_rep was cleared after saving
+                assert received_model.binary_rep is None, "binary_rep should be cleared after saving"
+                
+            finally:
+                # Clean up
+                sender_beacon.stop()
+                receiver_beacon.stop()
+                if test_models_dir.exists():
+                    import shutil
+                    shutil.rmtree(test_models_dir)
+
+    def test_execute_model_plan_raises_exception_when_model_cannot_be_loaded(self, temp_state_dir):
+        """Test that execute_model_plan raises exception when onnx_location and file_name are not set."""
+        from pathlib import Path
+        from mosaic_planner.state import Model, ModelType, Plan, Session, SessionStatus
+        
+        config = create_test_config_with_state(
+            state_dir=temp_state_dir,
+            host="127.0.0.1",
+            heartbeat_port=5000,
+            comms_port=5001,
+            heartbeat_frequency=2,
+            heartbeat_tolerance=5,
+            heartbeat_wait_timeout=2,
+            stats_request_timeout=10,
+            server_crt="",
+            server_key="",
+            ca_crt="",
+            benchmark_data_location="",
+            data_location="",
+            models_location="models",
+        )
+        
+        with patch("mosaic_comms.beacon.StatsCollector") as mock_stats_class:
+            mock_stats = MagicMock()
+            mock_stats.get_last_stats_json.return_value = '{"cpu_percent": 45.3}'
+            mock_stats_class.return_value = mock_stats
+            
+            beacon = Beacon(config)
+            
+            # Create model without binary_rep, onnx_location, or file_name
+            model = Model(
+                name="test_model",
+                model_type=ModelType.CNN,
+                binary_rep=None,
+                onnx_location=None,
+                file_name=None,
+            )
+            
+            # Create a plan
+            plan = Plan(
+                stats_data=[],
+                distribution_plan=[
+                    {
+                        "host": "127.0.0.1",
+                        "comms_port": 5002,
+                        "capacity_fraction": 1.0,
+                    }
+                ],
+                model=model,
+            )
+            
+            # Create a session
+            session = Session(plan=plan, status=SessionStatus.RUNNING)
+            
+            # Execute model plan should raise ValueError
+            with pytest.raises(ValueError) as exc_info:
+                beacon.execute_model_plan(session, model)
+            
+            assert "binary_rep is not set" in str(exc_info.value)
+            assert "both onnx_location and file_name are None" in str(exc_info.value)
+
+    def test_execute_model_plan_raises_exception_when_session_plan_is_none(self, temp_state_dir):
+        """Test that execute_model_plan raises exception when session plan is None."""
+        from mosaic_planner.state import Model, ModelType, Session, SessionStatus
+        
+        config = create_test_config_with_state(
+            state_dir=temp_state_dir,
+            host="127.0.0.1",
+            heartbeat_port=5000,
+            comms_port=5001,
+            heartbeat_frequency=2,
+            heartbeat_tolerance=5,
+            heartbeat_wait_timeout=2,
+            stats_request_timeout=10,
+            server_crt="",
+            server_key="",
+            ca_crt="",
+            benchmark_data_location="",
+            data_location="",
+            models_location="models",
+        )
+        
+        with patch("mosaic_comms.beacon.StatsCollector") as mock_stats_class:
+            mock_stats = MagicMock()
+            mock_stats.get_last_stats_json.return_value = '{"cpu_percent": 45.3}'
+            mock_stats_class.return_value = mock_stats
+            
+            beacon = Beacon(config)
+            
+            # Create model with binary_rep
+            model = Model(
+                name="test_model",
+                model_type=ModelType.CNN,
+                binary_rep=b"fake_model_data",
+            )
+            
+            # Create a session with None plan
+            session = Session(plan=None, status=SessionStatus.RUNNING)
+            
+            # Execute model plan should raise ValueError
+            with pytest.raises(ValueError) as exc_info:
+                beacon.execute_model_plan(session, model)
+            
+            assert "Session plan cannot be None" in str(exc_info.value)
+

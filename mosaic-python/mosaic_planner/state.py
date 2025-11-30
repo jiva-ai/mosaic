@@ -71,7 +71,48 @@ class Model:
     model_type: Optional[ModelType] = None
     onnx_location: Optional[str] = None  # Relative to MosaicConfig's models_location
     binary_rep: Optional[bytes] = None  # ONNX model loaded from onnx_location
-    file_name: Optional[str] = None  # File name of the model
+    file_name: Optional[str] = None  # File name of the model (automatically sanitized)
+    
+    def __post_init__(self):
+        """Sanitize file_name after initialization if it's set."""
+        if self.file_name is not None:
+            object.__setattr__(self, 'file_name', self._sanitize_filename(self.file_name))
+    
+    def __setattr__(self, name: str, value: Any) -> None:
+        """Sanitize file_name when it's set after initialization."""
+        if name == "file_name" and value is not None:
+            value = self._sanitize_filename(value)
+        object.__setattr__(self, name, value)
+    
+    @staticmethod
+    def _sanitize_filename(name: str) -> str:
+        """
+        Sanitize a filename for filesystem compatibility.
+        
+        Replaces invalid characters (spaces, symbols) with underscores.
+        Ensures the filename is valid for filesystems.
+        
+        Args:
+            name: Original filename/name
+        
+        Returns:
+            Sanitized filename safe for filesystems
+        """
+        import re
+        # Replace spaces and invalid filename characters with underscore
+        # Invalid characters for Unix: / \0 and any control characters
+        # Also replace common problematic characters: spaces, < > : " | ? * and symbols
+        # Keep only alphanumeric, underscores, hyphens, and dots (dots will be stripped later)
+        sanitized = re.sub(r'[^a-zA-Z0-9._-]', '_', name)
+        # Remove leading/trailing dots and spaces (converted to underscores)
+        sanitized = sanitized.strip('._')
+        # Ensure it's not empty
+        if not sanitized:
+            sanitized = "unnamed"
+        # Limit length to reasonable size (255 chars is typical max)
+        if len(sanitized) > 255:
+            sanitized = sanitized[:255]
+        return sanitized
 
 
 @dataclass

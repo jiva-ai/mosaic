@@ -28,7 +28,7 @@ from mosaic_planner.planner import (
     serialize_plan_with_data,
     unzip_stream_memory_safe,
 )
-from mosaic_planner.state import Data, FileDefinition, Plan, Session, SessionStatus
+from mosaic_planner.state import Data, FileDefinition, Model, Plan, Session, SessionStatus
 from mosaic_stats.benchmark import load_benchmarks
 from mosaic_stats.stats_collector import StatsCollector
 
@@ -125,6 +125,7 @@ class Beacon:
         self.register("exdplan", self._handle_execute_data_plan)
         self.register("exdplan_chunk", self._handle_execute_data_plan_chunk)
         self.register("exdplan_finalize", self._handle_execute_data_plan_finalize)
+        self.register("exmplan", self._handle_execute_model_plan)
 
         # Thread control
         self._stop_event = threading.Event()
@@ -1426,6 +1427,202 @@ class Beacon:
             # Single-threaded execution
             for machine_plan in plan.data_segmentation_plan:
                 self._send_data_to_machine(machine_plan, plan, file_def_map)
+
+    def execute_model_plan(self, session: Session, model: Model) -> None:
+        """
+        Execute a model distribution plan by sending model to nodes.
+        
+        Reads the distribution_plan from the Session's Plan, and distributes
+        the model to all host/comms_port machines listed in the plan.
+        If a node is the current host, calls the handler directly.
+        
+        Args:
+            session: Session instance with a Plan (plan must not be None)
+            model: Model instance to distribute
+        """
+        if session.plan is None:
+            raise ValueError("Session plan cannot be None for model distribution")
+        
+        plan = session.plan
+        if not plan.distribution_plan:
+            logger.warning("Plan has no distribution_plan")
+            return
+        
+        # Ensure model has binary_rep set
+        if model.binary_rep is None:
+            # Try to read from onnx_location and file_name
+            if model.onnx_location is None and model.file_name is None:
+                raise ValueError(
+                    "Model binary_rep is not set and cannot be loaded: "
+                    "both onnx_location and file_name are None"
+                )
+            
+            # Construct file path
+            from pathlib import Path
+            models_path = Path(self.config.models_location) if self.config.models_location else Path("models")
+            
+            if model.onnx_location:
+                model_file = models_path / model.onnx_location
+                if model.file_name:
+                    model_file = model_file / model.file_name
+                else:
+                    # Try to find the file in the directory
+                    if model_file.is_dir():
+                        # Look for .onnx files in the directory
+                        onnx_files = list(model_file.glob("*.onnx"))
+                        if len(onnx_files) == 1:
+                            model_file = onnx_files[0]
+                        elif len(onnx_files) > 1:
+                            raise ValueError(
+                                f"Multiple .onnx files found in {model_file}, "
+                                "file_name must be specified"
+                            )
+                        else:
+                            raise ValueError(f"No .onnx files found in {model_file}")
+            else:
+                # Only file_name is set
+                model_file = models_path / model.file_name
+            
+            # Read the model file
+            if not model_file.exists():
+                raise ValueError(f"Model file not found: {model_file}")
+            
+            try:
+                with open(model_file, 'rb') as f:
+                    model.binary_rep = f.read()
+                logger.info(f"Loaded model binary from {model_file} ({len(model.binary_rep)} bytes)")
+            except Exception as e:
+                raise ValueError(f"Error reading model file {model_file}: {e}")
+        
+        # Serialize model for transmission
+        try:
+            import gzip
+            # Pickle the model
+            pickled_model = pickle.dumps(model)
+            # Compress it
+            serialized_model = gzip.compress(pickled_model)
+        except Exception as e:
+            logger.error(f"Error serializing model: {e}")
+            return
+        
+        # Send to each machine in distribution_plan
+        for machine_info in plan.distribution_plan:
+            host = machine_info.get("host")
+            comms_port = machine_info.get("comms_port")
+            
+            if not host or not comms_port:
+                logger.warning(f"Invalid distribution plan entry: missing host or comms_port")
+                continue
+            
+            # Send to node (or call handler directly if self)
+            if self._is_self_host(host, comms_port):
+                # Call handler directly
+                try:
+                    logger.info(f"Executing model plan locally for {host}:{comms_port}")
+                    self._handle_execute_model_plan(serialized_model)
+                except Exception as e:
+                    logger.error(f"Error executing model plan locally: {e}")
+            else:
+                # Send to remote node
+                try:
+                    data_size_bytes = len(serialized_model)
+                    chunk_size_mb = self.config.data_chunk_size
+                    chunk_size_bytes = chunk_size_mb * 1024 * 1024
+                    
+                    if data_size_bytes <= chunk_size_bytes:
+                        # Small enough to send in one chunk
+                        logger.info(f"Sending model to {host}:{comms_port} (single chunk, {data_size_bytes / 1024 / 1024:.2f} MB)")
+                        result = self.send_command(
+                            host=host,
+                            port=comms_port,
+                            command="exmplan",
+                            payload=serialized_model,
+                            timeout=300.0,  # Longer timeout for model transfer
+                        )
+                        if result is None:
+                            logger.warning(f"No response from {host}:{comms_port} for model plan")
+                    else:
+                        # Need to chunk (similar to data plan)
+                        chunks = chunk_data(serialized_model, chunk_size_mb)
+                        chunk_id = str(uuid.uuid4())
+                        total_chunks = len(chunks)
+                        
+                        logger.info(f"Sending model to {host}:{comms_port} in {total_chunks} chunks (chunk_id: {chunk_id})")
+                        
+                        # Send each chunk
+                        for chunk_index, chunk in enumerate(chunks):
+                            chunk_header = {
+                                "chunk_id": chunk_id,
+                                "chunk_index": chunk_index,
+                                "total_chunks": total_chunks,
+                            }
+                            
+                            header_bytes = pickle.dumps(chunk_header)
+                            header_length = len(header_bytes).to_bytes(4, byteorder="big")
+                            chunk_with_header = header_length + header_bytes + chunk
+                            
+                            result = self.send_command(
+                                host=host,
+                                port=comms_port,
+                                command="exmplan_chunk",
+                                payload=chunk_with_header,
+                                timeout=300.0,
+                            )
+                            
+                            if result is None:
+                                logger.warning(f"No response for chunk {chunk_index + 1}/{total_chunks} from {host}:{comms_port}")
+                                break
+                        
+                        # Send final command to trigger processing
+                        logger.info(f"Sending final command to process model chunks (chunk_id: {chunk_id})")
+                        result = self.send_command(
+                            host=host,
+                            port=comms_port,
+                            command="exmplan_finalize",
+                            payload={"chunk_id": chunk_id},
+                            timeout=300.0,
+                        )
+                except Exception as e:
+                    logger.error(f"Error sending model to {host}:{comms_port}: {e}")
+
+    def _handle_execute_model_plan(self, payload: Union[Dict[str, Any], bytes]) -> Optional[Dict[str, Any]]:
+        """
+        Handle execute model plan command.
+        
+        Receives serialized Model, deserializes it, and adds it using mosaic.add_model.
+        
+        Args:
+            payload: Serialized bytes containing Model
+        
+        Returns:
+            Dictionary with status information
+        """
+        if not isinstance(payload, bytes):
+            logger.error("execute_model_plan payload must be bytes")
+            return {"status": "error", "message": "Payload must be bytes"}
+        
+        try:
+            # Deserialize model
+            import gzip
+            # Decompress
+            pickled_model = gzip.decompress(payload)
+            # Unpickle
+            model = pickle.loads(pickled_model)
+            
+            # Import add_model from mosaic
+            from mosaic.mosaic import add_model
+            
+            # Add the model
+            add_model(model)
+            
+            logger.info(f"Successfully added model {model.name}")
+            return {
+                "status": "success",
+                "message": f"Model {model.name} added successfully",
+            }
+        except Exception as e:
+            logger.error(f"Error handling execute_model_plan: {e}")
+            return {"status": "error", "message": str(e)}
 
     def _handle_execute_data_plan(self, payload: Union[Dict[str, Any], bytes]) -> Optional[Dict[str, Any]]:
         """
