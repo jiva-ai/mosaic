@@ -8,6 +8,7 @@ import ssl
 import threading
 import time
 import uuid
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Union
@@ -1222,6 +1223,154 @@ class Beacon:
         
         return False
 
+    def _send_data_to_machine(
+        self,
+        machine_plan: Dict[str, Any],
+        plan: Plan,
+        file_def_map: Dict[str, FileDefinition],
+    ) -> None:
+        """
+        Send data to a single machine (helper method for threading).
+        
+        Args:
+            machine_plan: Machine plan dictionary with host, comms_port, and segments
+            plan: Original Plan object
+            file_def_map: Mapping of file location to FileDefinition
+        """
+        host = machine_plan.get("host")
+        comms_port = machine_plan.get("comms_port")
+        segments = machine_plan.get("segments", [])
+        
+        if not host or not comms_port:
+            logger.warning(f"Invalid machine plan: missing host or comms_port")
+            return
+        
+        # Prepare data for this machine
+        machine_data = Data(file_definitions=[])
+        
+        for segment in segments:
+            file_location = segment.get("file_location")
+            if not file_location:
+                continue
+            
+            # Find corresponding FileDefinition
+            file_def = file_def_map.get(file_location)
+            if not file_def:
+                logger.warning(f"FileDefinition not found for location: {file_location}")
+                continue
+            
+            # Prepare file data for transmission
+            try:
+                binary_data = prepare_file_data_for_transmission(
+                    file_def=file_def,
+                    segment_info=segment,
+                    data_folder=self.config.data_location,
+                )
+                
+                # Create new FileDefinition with binary data
+                new_file_def = FileDefinition(
+                    location=file_def.location,
+                    data_type=file_def.data_type,
+                    is_segmentable=file_def.is_segmentable,
+                    binary_data=binary_data,
+                )
+                machine_data.file_definitions.append(new_file_def)
+            except Exception as e:
+                logger.error(f"Error preparing data for {file_location}: {e}")
+                continue
+        
+        # Serialize plan and data for this machine
+        try:
+            # Create a machine-specific plan (just the segments for this machine)
+            machine_plan_obj = Plan(
+                stats_data=plan.stats_data,
+                distribution_plan=plan.distribution_plan,
+                model=plan.model,
+                data_segmentation_plan=[machine_plan],  # Only this machine's plan
+            )
+            
+            serialized_data = serialize_plan_with_data(machine_plan_obj, machine_data)
+        except Exception as e:
+            logger.error(f"Error serializing data for {host}:{comms_port}: {e}")
+            return
+        
+        # Send to node (or call handler directly if self)
+        if self._is_self_host(host, comms_port):
+            # Call handler directly
+            try:
+                logger.info(f"Executing data plan locally for {host}:{comms_port}")
+                self._handle_execute_data_plan(serialized_data)
+            except Exception as e:
+                logger.error(f"Error executing data plan locally: {e}")
+        else:
+            # Send to remote node with chunking if needed
+            try:
+                # Calculate total size of serialized data
+                data_size_bytes = len(serialized_data)
+                chunk_size_mb = self.config.data_chunk_size
+                chunk_size_bytes = chunk_size_mb * 1024 * 1024
+                
+                if data_size_bytes <= chunk_size_bytes:
+                    # Small enough to send in one chunk
+                    logger.info(f"Sending data plan to {host}:{comms_port} (single chunk, {data_size_bytes / 1024 / 1024:.2f} MB)")
+                    result = self.send_command(
+                        host=host,
+                        port=comms_port,
+                        command="exdplan",
+                        payload=serialized_data,
+                        timeout=300.0,  # Longer timeout for data transfer
+                    )
+                    if result is None:
+                        logger.warning(f"No response from {host}:{comms_port} for data plan")
+                else:
+                    # Need to chunk
+                    chunks = chunk_data(serialized_data, chunk_size_mb)
+                    chunk_id = str(uuid.uuid4())
+                    total_chunks = len(chunks)
+                    
+                    logger.info(f"Sending data plan to {host}:{comms_port} in {total_chunks} chunks (chunk_id: {chunk_id})")
+                    
+                    # Send each chunk
+                    for chunk_index, chunk in enumerate(chunks):
+                        # Create chunk payload with metadata in header
+                        # We'll use a custom header format for chunks
+                        chunk_header = {
+                            "chunk_id": chunk_id,
+                            "chunk_index": chunk_index,
+                            "total_chunks": total_chunks,
+                        }
+                        
+                        # Send chunk data as binary with metadata in header
+                        # We need to modify send_command to support custom headers
+                        # For now, pickle the header and prepend it to chunk
+                        header_bytes = pickle.dumps(chunk_header)
+                        header_length = len(header_bytes).to_bytes(4, byteorder="big")
+                        chunk_with_header = header_length + header_bytes + chunk
+                        
+                        result = self.send_command(
+                            host=host,
+                            port=comms_port,
+                            command="exdplan_chunk",
+                            payload=chunk_with_header,
+                            timeout=300.0,
+                        )
+                        
+                        if result is None:
+                            logger.warning(f"No response for chunk {chunk_index + 1}/{total_chunks} from {host}:{comms_port}")
+                            break
+                    
+                    # Send final command to trigger processing
+                    logger.info(f"Sending final command to process chunks (chunk_id: {chunk_id})")
+                    result = self.send_command(
+                        host=host,
+                        port=comms_port,
+                        command="exdplan_finalize",
+                        payload={"chunk_id": chunk_id},
+                        timeout=300.0,
+                    )
+            except Exception as e:
+                logger.error(f"Error sending data plan to {host}:{comms_port}: {e}")
+
     def execute_data_plan(self, plan: Plan, data: Data) -> None:
         """
         Execute a data distribution plan by sending data segments to nodes.
@@ -1229,6 +1378,9 @@ class Beacon:
         Reads the data_segmentation_plan from the Plan, prepares file data,
         and distributes it to the appropriate nodes via host/comms_port.
         If a node is the current host, calls the handler directly.
+        
+        Uses multithreading when network capacity is sufficient to optimize
+        data transfer to multiple machines.
         
         Args:
             plan: Plan object with data_segmentation_plan
@@ -1241,141 +1393,44 @@ class Beacon:
         # Create a mapping of file location to FileDefinition for quick lookup
         file_def_map = {fd.location: fd for fd in data.file_definitions}
         
-        # Process each machine's segments
-        for machine_plan in plan.data_segmentation_plan:
-            host = machine_plan.get("host")
-            comms_port = machine_plan.get("comms_port")
-            segments = machine_plan.get("segments", [])
-            
-            if not host or not comms_port:
-                logger.warning(f"Invalid machine plan: missing host or comms_port")
-                continue
-            
-            # Prepare data for this machine
-            machine_data = Data(file_definitions=[])
-            
-            for segment in segments:
-                file_location = segment.get("file_location")
-                if not file_location:
-                    continue
-                
-                # Find corresponding FileDefinition
-                file_def = file_def_map.get(file_location)
-                if not file_def:
-                    logger.warning(f"FileDefinition not found for location: {file_location}")
-                    continue
-                
-                # Prepare file data for transmission
-                try:
-                    binary_data = prepare_file_data_for_transmission(
-                        file_def=file_def,
-                        segment_info=segment,
-                        data_folder=self.config.data_location,
-                    )
-                    
-                    # Create new FileDefinition with binary data
-                    new_file_def = FileDefinition(
-                        location=file_def.location,
-                        data_type=file_def.data_type,
-                        is_segmentable=file_def.is_segmentable,
-                        binary_data=binary_data,
-                    )
-                    machine_data.file_definitions.append(new_file_def)
-                except Exception as e:
-                    logger.error(f"Error preparing data for {file_location}: {e}")
-                    continue
-            
-            # Serialize plan and data for this machine
-            try:
-                # Create a machine-specific plan (just the segments for this machine)
-                machine_plan_obj = Plan(
-                    stats_data=plan.stats_data,
-                    distribution_plan=plan.distribution_plan,
-                    model=plan.model,
-                    data_segmentation_plan=[machine_plan],  # Only this machine's plan
-                )
-                
-                serialized_data = serialize_plan_with_data(machine_plan_obj, machine_data)
-            except Exception as e:
-                logger.error(f"Error serializing data for {host}:{comms_port}: {e}")
-                continue
-            
-            # Send to node (or call handler directly if self)
-            if self._is_self_host(host, comms_port):
-                # Call handler directly
-                try:
-                    logger.info(f"Executing data plan locally for {host}:{comms_port}")
-                    self._handle_execute_data_plan(serialized_data)
-                except Exception as e:
-                    logger.error(f"Error executing data plan locally: {e}")
-            else:
-                # Send to remote node with chunking if needed
-                try:
-                    # Calculate total size of serialized data
-                    data_size_bytes = len(serialized_data)
+        # Determine thread count based on network capacity
+        thread_count = 1  # Default to single-threaded
+        try:
+            benchmark_data = load_benchmarks(self.config.benchmark_data_location)
+            if benchmark_data and isinstance(benchmark_data.get("network_capacity"), (int, float)):
+                network_capacity = benchmark_data["network_capacity"]
+                if network_capacity > 1000:
                     chunk_size_mb = self.config.data_chunk_size
-                    chunk_size_bytes = chunk_size_mb * 1024 * 1024
-                    
-                    if data_size_bytes <= chunk_size_bytes:
-                        # Small enough to send in one chunk
-                        logger.info(f"Sending data plan to {host}:{comms_port} (single chunk, {data_size_bytes / 1024 / 1024:.2f} MB)")
-                        result = self.send_command(
-                            host=host,
-                            port=comms_port,
-                            command="exdplan",
-                            payload=serialized_data,
-                            timeout=300.0,  # Longer timeout for data transfer
-                        )
-                        if result is None:
-                            logger.warning(f"No response from {host}:{comms_port} for data plan")
-                    else:
-                        # Need to chunk
-                        chunks = chunk_data(serialized_data, chunk_size_mb)
-                        chunk_id = str(uuid.uuid4())
-                        total_chunks = len(chunks)
-                        
-                        logger.info(f"Sending data plan to {host}:{comms_port} in {total_chunks} chunks (chunk_id: {chunk_id})")
-                        
-                        # Send each chunk
-                        for chunk_index, chunk in enumerate(chunks):
-                            # Create chunk payload with metadata in header
-                            # We'll use a custom header format for chunks
-                            chunk_header = {
-                                "chunk_id": chunk_id,
-                                "chunk_index": chunk_index,
-                                "total_chunks": total_chunks,
-                            }
-                            
-                            # Send chunk data as binary with metadata in header
-                            # We need to modify send_command to support custom headers
-                            # For now, pickle the header and prepend it to chunk
-                            header_bytes = pickle.dumps(chunk_header)
-                            header_length = len(header_bytes).to_bytes(4, byteorder="big")
-                            chunk_with_header = header_length + header_bytes + chunk
-                            
-                            result = self.send_command(
-                                host=host,
-                                port=comms_port,
-                                command="exdplan_chunk",
-                                payload=chunk_with_header,
-                                timeout=300.0,
-                            )
-                            
-                            if result is None:
-                                logger.warning(f"No response for chunk {chunk_index + 1}/{total_chunks} from {host}:{comms_port}")
-                                break
-                        
-                        # Send final command to trigger processing
-                        logger.info(f"Sending final command to process chunks (chunk_id: {chunk_id})")
-                        result = self.send_command(
-                            host=host,
-                            port=comms_port,
-                            command="exdplan_finalize",
-                            payload={"chunk_id": chunk_id},
-                            timeout=300.0,
-                        )
-                except Exception as e:
-                    logger.error(f"Error sending data plan to {host}:{comms_port}: {e}")
+                    possible_thread_count = int(network_capacity / chunk_size_mb)
+                    thread_count = max(5, possible_thread_count)
+                    logger.info(f"Network capacity {network_capacity} Mbps detected, using {thread_count} threads for data distribution")
+        except Exception as e:
+            logger.warning(f"Error loading benchmark data for thread count calculation: {e}")
+        
+        # Process each machine's segments
+        if thread_count > 1 and len(plan.data_segmentation_plan) > 1:
+            # Use multithreading for multiple machines
+            with ThreadPoolExecutor(max_workers=thread_count) as executor:
+                futures = []
+                for machine_plan in plan.data_segmentation_plan:
+                    future = executor.submit(
+                        self._send_data_to_machine,
+                        machine_plan,
+                        plan,
+                        file_def_map,
+                    )
+                    futures.append(future)
+                
+                # Wait for all sends to complete
+                for future in as_completed(futures):
+                    try:
+                        future.result()  # This will raise any exceptions that occurred
+                    except Exception as e:
+                        logger.error(f"Error in threaded data send: {e}")
+        else:
+            # Single-threaded execution
+            for machine_plan in plan.data_segmentation_plan:
+                self._send_data_to_machine(machine_plan, plan, file_def_map)
 
     def _handle_execute_data_plan(self, payload: Union[Dict[str, Any], bytes]) -> Optional[Dict[str, Any]]:
         """

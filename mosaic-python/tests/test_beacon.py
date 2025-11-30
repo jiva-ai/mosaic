@@ -3,6 +3,7 @@
 import json
 import socket
 import ssl
+import threading
 import time
 from pathlib import Path
 from unittest.mock import MagicMock, Mock, patch
@@ -11,6 +12,7 @@ import pytest
 
 from mosaic_comms.beacon import Beacon, ReceiveHeartbeatStatus, SendHeartbeatStatus
 from mosaic_config.config import MosaicConfig, Peer
+from mosaic_planner.state import Data, FileDefinition, DataType, Model, Plan
 from tests.conftest import create_test_config_with_state
 
 
@@ -2369,4 +2371,207 @@ class TestBeaconCollectStats:
                     shutil.rmtree(extracted_dir_beacon2)
                 if extracted_dir_beacon3.exists():
                     shutil.rmtree(extracted_dir_beacon3)
+
+    def test_execute_data_plan_multithreaded_simultaneous_send(self, temp_state_dir):
+        """Test that execute_data_plan sends data simultaneously to multiple recipients when multithreading is enabled."""
+        from pathlib import Path
+        from unittest.mock import patch
+        
+        # Set up test_data directory
+        test_data_dir = Path(__file__).parent / 'test_data'
+        test_data_dir.mkdir(exist_ok=True)
+        
+        # Create sender beacon config
+        sender_config = create_test_config_with_state(
+            state_dir=temp_state_dir / "sender",
+            host="127.0.0.1",
+            heartbeat_port=8000,
+            comms_port=8001,
+            heartbeat_frequency=2,
+            heartbeat_tolerance=5,
+            heartbeat_wait_timeout=2,
+            stats_request_timeout=10,
+            server_crt="",
+            server_key="",
+            ca_crt="",
+            benchmark_data_location=str(test_data_dir),
+            data_location=str(test_data_dir),
+            data_chunk_size=2,  # 2MB chunks
+        )
+        
+        # Create receiver beacon configs
+        receiver1_config = create_test_config_with_state(
+            state_dir=temp_state_dir / "receiver1",
+            host="127.0.0.1",
+            heartbeat_port=8002,
+            comms_port=8003,
+            heartbeat_frequency=2,
+            heartbeat_tolerance=5,
+            heartbeat_wait_timeout=2,
+            stats_request_timeout=10,
+            server_crt="",
+            server_key="",
+            ca_crt="",
+            benchmark_data_location="",
+            data_location=str(test_data_dir),
+        )
+        
+        receiver2_config = create_test_config_with_state(
+            state_dir=temp_state_dir / "receiver2",
+            host="127.0.0.1",
+            heartbeat_port=8004,
+            comms_port=8005,
+            heartbeat_frequency=2,
+            heartbeat_tolerance=5,
+            heartbeat_wait_timeout=2,
+            stats_request_timeout=10,
+            server_crt="",
+            server_key="",
+            ca_crt="",
+            benchmark_data_location="",
+            data_location=str(test_data_dir),
+        )
+        
+        with patch("mosaic_comms.beacon.StatsCollector") as mock_stats_class:
+            mock_stats = MagicMock()
+            mock_stats.get_last_stats_json.return_value = '{"cpu_percent": 45.3}'
+            mock_stats_class.return_value = mock_stats
+            
+            # Create sender beacon
+            sender_beacon = Beacon(sender_config)
+            
+            # Track when send_command is called for each recipient
+            send_timestamps = {}
+            send_lock = threading.Lock()
+            
+            # Mock send_command to track timestamps
+            original_send_command = sender_beacon.send_command
+            
+            def mock_send_command(host, port, command, payload=None, timeout=None):
+                """Track when send_command is called for each recipient."""
+                if command == "exdplan":  # Only track the main data plan command
+                    with send_lock:
+                        key = f"{host}:{port}"
+                        if key not in send_timestamps:
+                            send_timestamps[key] = []
+                        send_timestamps[key].append(time.time())
+                    # Add a small delay to simulate network latency
+                    time.sleep(0.01)
+                # Call original send_command for other commands or return success
+                if command in ("exdplan", "exdplan_chunk", "exdplan_finalize"):
+                    return {"status": "success"}
+                return original_send_command(host, port, command, payload, timeout)
+            
+            sender_beacon.send_command = mock_send_command
+            
+            # Mock benchmark data to enable multithreading
+            # network_capacity = 5000 Mbps, chunk_size = 2MB
+            # possible_thread_count = 5000 / 2 = 2500
+            # thread_count = max(5, 2500) = 2500 (but we'll cap it reasonably)
+            mock_benchmark_data = {
+                "network_capacity": 5000,  # 5000 Mbps > 1000, so multithreading enabled
+                "timestamp_ms": int(time.time() * 1000),
+            }
+            
+            with patch("mosaic_comms.beacon.load_benchmarks", return_value=mock_benchmark_data):
+                # Create a simple plan with data to send to 2 recipients
+                model = Model(name="test_model")
+                plan = Plan(
+                    stats_data=[],
+                    distribution_plan=[],
+                    model=model,
+                    data_segmentation_plan=[
+                        {
+                            "host": receiver1_config.host,
+                            "comms_port": receiver1_config.comms_port,
+                            "fraction": 0.5,
+                            "segments": [
+                                {
+                                    "file_location": "test_file.csv",
+                                    "data_type": "csv",
+                                    "is_segmentable": True,
+                                    "start_row": 0,
+                                    "end_row": 10,
+                                },
+                            ],
+                        },
+                        {
+                            "host": receiver2_config.host,
+                            "comms_port": receiver2_config.comms_port,
+                            "fraction": 0.5,
+                            "segments": [
+                                {
+                                    "file_location": "test_file.csv",
+                                    "data_type": "csv",
+                                    "is_segmentable": True,
+                                    "start_row": 10,
+                                    "end_row": 20,
+                                },
+                            ],
+                        },
+                    ],
+                )
+                
+                # Create a simple CSV file for testing
+                test_csv = test_data_dir / "test_file.csv"
+                with open(test_csv, 'w', newline='') as f:
+                    import csv
+                    writer = csv.writer(f)
+                    writer.writerow(['col1', 'col2'])
+                    for i in range(20):
+                        writer.writerow([f'val1_{i}', f'val2_{i}'])
+                
+                # Create Data with file definition
+                file_def = FileDefinition(
+                    location="test_file.csv",
+                    data_type=DataType.CSV,
+                    is_segmentable=True,
+                )
+                data = Data(file_definitions=[file_def])
+                
+                try:
+                    # Execute data plan
+                    start_time = time.time()
+                    sender_beacon.execute_data_plan(plan, data)
+                    end_time = time.time()
+                    
+                    # Verify that both recipients received data
+                    receiver1_key = f"{receiver1_config.host}:{receiver1_config.comms_port}"
+                    receiver2_key = f"{receiver2_config.host}:{receiver2_config.comms_port}"
+                    
+                    assert receiver1_key in send_timestamps, "Receiver1 should have received data"
+                    assert receiver2_key in send_timestamps, "Receiver2 should have received data"
+                    
+                    # Get the first send timestamp for each receiver
+                    receiver1_first_send = send_timestamps[receiver1_key][0]
+                    receiver2_first_send = send_timestamps[receiver2_key][0]
+                    
+                    # Calculate time difference between the two sends
+                    time_diff = abs(receiver1_first_send - receiver2_first_send)
+                    
+                    # If multithreading is working, both sends should start within a small time window
+                    # (e.g., within 0.1 seconds of each other)
+                    # If sequential, the second send would start after the first completes (much longer)
+                    max_time_diff_for_simultaneous = 0.1  # 100ms tolerance
+                    assert time_diff < max_time_diff_for_simultaneous, (
+                        f"Sends should be simultaneous (time diff: {time_diff:.3f}s), "
+                        f"but got {time_diff:.3f}s difference. "
+                        f"Receiver1: {receiver1_first_send:.3f}, Receiver2: {receiver2_first_send:.3f}"
+                    )
+                    
+                    # Verify total execution time is reasonable (should be close to single send time,
+                    # not double, if multithreading is working)
+                    total_time = end_time - start_time
+                    # With multithreading, total time should be roughly the time of one send + overhead
+                    # Without multithreading, it would be roughly 2x the time of one send
+                    # We expect total time to be less than 0.5 seconds (with mocked fast sends)
+                    assert total_time < 0.5, (
+                        f"Total execution time {total_time:.3f}s suggests sequential sending. "
+                        f"With multithreading, should be much faster."
+                    )
+                finally:
+                    # Clean up - ensure beacon is always stopped
+                    sender_beacon.stop()
+                    if test_csv.exists():
+                        test_csv.unlink()
 
