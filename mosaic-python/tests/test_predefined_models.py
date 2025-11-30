@@ -16,7 +16,7 @@ from mosaic_model_runtime.predefined_models import (
 )
 
 
-@pytest.mark.skip(reason="test takes too long; temp skip")
+#@pytest.mark.skip(reason="test takes too long; temp skip")
 def test_create_resnet50_onnx(tmp_path):
     """Test that create_resnet50_onnx returns a filename."""
     result = create_resnet50_onnx(tmp_path)
@@ -26,7 +26,7 @@ def test_create_resnet50_onnx(tmp_path):
     assert (tmp_path / result).exists()
 
 
-@pytest.mark.skip(reason="test takes too long; temp skip")
+#@pytest.mark.skip(reason="test takes too long; temp skip")
 def test_create_resnet101_onnx(tmp_path):
     """Test that create_resnet101_onnx returns a filename."""
     result = create_resnet101_onnx(tmp_path)
@@ -36,7 +36,7 @@ def test_create_resnet101_onnx(tmp_path):
     assert (tmp_path / result).exists()
 
 
-@pytest.mark.skip(reason="test takes too long; temp skip")
+#@pytest.mark.skip(reason="test takes too long; temp skip")
 def test_create_wav2vec2_onnx(tmp_path):
     """Test that create_wav2vec2_onnx returns a filename."""
     result = create_wav2vec2_onnx(tmp_path)
@@ -46,7 +46,7 @@ def test_create_wav2vec2_onnx(tmp_path):
     assert (tmp_path / result).exists()
 
 
-@pytest.mark.skip(reason="test takes too long; temp skip")
+#@pytest.mark.skip(reason="test takes too long; temp skip")
 def test_create_gpt_neo_onnx(tmp_path):
     """Test that create_gpt_neo_onnx returns a filename."""
     result = create_gpt_neo_onnx(tmp_path)
@@ -56,7 +56,7 @@ def test_create_gpt_neo_onnx(tmp_path):
     assert (tmp_path / result).exists()
 
 
-@pytest.mark.skip(reason="test takes too long; temp skip")
+#@pytest.mark.skip(reason="test takes too long; temp skip")
 def test_create_gcn_onnx(tmp_path):
     """Test that create_gcn_onnx returns a filename."""
     result = create_gcn_onnx(tmp_path)
@@ -66,7 +66,7 @@ def test_create_gcn_onnx(tmp_path):
     assert (tmp_path / result).exists()
 
 
-@pytest.mark.skip(reason="test takes too long; temp skip")
+#@pytest.mark.skip(reason="test takes too long; temp skip")
 def test_create_biggan_onnx(tmp_path):
     """Test that create_biggan_onnx returns a filename."""
     result = create_biggan_onnx(tmp_path)
@@ -76,7 +76,7 @@ def test_create_biggan_onnx(tmp_path):
     assert (tmp_path / result).exists()
 
 
-@pytest.mark.skip(reason="test takes too long; temp skip")
+#@pytest.mark.skip(reason="test takes too long; temp skip")
 def test_create_ppo_onnx(tmp_path):
     """Test that create_ppo_onnx returns a filename."""
     result = create_ppo_onnx(tmp_path)

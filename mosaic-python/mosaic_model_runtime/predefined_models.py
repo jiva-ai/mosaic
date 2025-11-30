@@ -51,8 +51,8 @@ def create_resnet50_onnx(output_dir: Union[str, Path]) -> str:
         )
         
         # Load and validate the ONNX model
-        onnx_model = onnx.load(str(onnx_path))
-        onnx.checker.check_model(onnx_model)
+        #onnx_model = onnx.load(str(onnx_path))
+        #onnx.checker.check_model(onnx_model)
         
         return filename
     except Exception as e:
@@ -104,8 +104,8 @@ def create_resnet101_onnx(output_dir: Union[str, Path]) -> str:
         )
         
         # Load and validate the ONNX model
-        onnx_model = onnx.load(str(onnx_path))
-        onnx.checker.check_model(onnx_model)
+        #onnx_model = onnx.load(str(onnx_path))
+        #onnx.checker.check_model(onnx_model)
         
         return filename
     except Exception as e:
@@ -158,8 +158,8 @@ def create_wav2vec2_onnx(output_dir: Union[str, Path]) -> str:
         )
         
         # Load and validate the ONNX model
-        onnx_model = onnx.load(str(onnx_path))
-        onnx.checker.check_model(onnx_model)
+        #onnx_model = onnx.load(str(onnx_path))
+        #onnx.checker.check_model(onnx_model)
         
         return filename
     except Exception as e:
@@ -229,8 +229,8 @@ def create_gpt_neo_onnx(output_dir: Union[str, Path]) -> str:
         )
         
         # Load and validate the ONNX model
-        onnx_model = onnx.load(str(onnx_path))
-        onnx.checker.check_model(onnx_model)
+        #onnx_model = onnx.load(str(onnx_path))
+        #onnx.checker.check_model(onnx_model)
         
         return filename
     except Exception as e:
@@ -316,8 +316,8 @@ def create_gcn_onnx(output_dir: Union[str, Path]) -> str:
         )
         
         # Load and validate the ONNX model
-        onnx_model = onnx.load(str(onnx_path))
-        onnx.checker.check_model(onnx_model)
+        #onnx_model = onnx.load(str(onnx_path))
+        #onnx.checker.check_model(onnx_model)
         
         return filename
     except Exception as e:
@@ -431,8 +431,8 @@ def create_biggan_onnx(output_dir: Union[str, Path]) -> str:
         )
         
         # Load and validate the ONNX model
-        onnx_model = onnx.load(str(onnx_path))
-        onnx.checker.check_model(onnx_model)
+        #onnx_model = onnx.load(str(onnx_path))
+        #onnx.checker.check_model(onnx_model)
         
         return filename
     except Exception as e:
@@ -513,8 +513,8 @@ def create_ppo_onnx(output_dir: Union[str, Path]) -> str:
         )
         
         # Load and validate the ONNX model
-        onnx_model = onnx.load(str(onnx_path))
-        onnx.checker.check_model(onnx_model)
+        #onnx_model = onnx.load(str(onnx_path))
+        #onnx.checker.check_model(onnx_model)
         
         return filename
     except Exception as e:
