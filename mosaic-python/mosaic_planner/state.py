@@ -49,19 +49,99 @@ class SessionStatus(Enum):
 
 @dataclass
 class FileDefinition:
-    """Represents a file definition in a Data instance."""
+    """
+    Represents a file definition in a Data instance.
+    
+    Training hints fields help understand how to prepare data for model training:
+    
+    Examples:
+        # Image classification (ResNet-50/101):
+        input_shape=[3, 224, 224]
+        preprocessing_hints={"normalize": True, "mean": [0.485, 0.456, 0.406], "std": [0.229, 0.224, 0.225], "resize": [224, 224]}
+        batch_format="image_tensor"
+        label_format="class_index"
+        
+        # Audio speech recognition (Wav2Vec2):
+        input_shape=[16000]  # 1 second at 16kHz
+        preprocessing_hints={"sample_rate": 16000, "normalize": True}
+        batch_format="audio_waveform"
+        label_format="text_sequence"
+        
+        # Text language modeling (GPT-Neo):
+        input_shape=[None]  # Variable length
+        preprocessing_hints={"tokenizer": "gpt2", "max_length": 1024, "padding": True}
+        batch_format="text_tokens"
+        label_format="text_sequence"  # Next token prediction
+        
+        # Graph node classification (GCN):
+        input_shape=[None, 128]  # [num_nodes, num_features]
+        preprocessing_hints={"edge_format": "coo", "normalize_adjacency": True}
+        batch_format="graph_data"
+        label_format="node_labels"
+        
+        # Image generation (BigGAN):
+        input_shape=[3, 128, 128]
+        preprocessing_hints={"normalize": True, "range": [-1, 1]}
+        batch_format="image_tensor"
+        label_format="class_index"  # Class-conditional generation
+        
+        # Reinforcement learning (PPO):
+        input_shape=[4]  # Observation space
+        preprocessing_hints={"normalize_obs": True, "clip_rewards": True}
+        batch_format="observation_tensor"
+        label_format="action_logits"  # Policy output
+    """
 
     location: str  # Relative to MosaicConfig's data_folder
     data_type: DataType
     is_segmentable: bool = True
     binary_data: Optional[bytes] = None  # Optional, filled in afterwards
+    # Training hints for data preparation
+    input_shape: Optional[List[int]] = None  # Expected input shape, e.g., [3, 224, 224] for images
+    preprocessing_hints: Optional[Dict[str, Any]] = None  # Hints for preprocessing (normalization, resize, etc.)
+    batch_format: Optional[str] = None  # Batch format hint, e.g., "image_tensor", "audio_waveform", "text_tokens"
+    label_format: Optional[str] = None  # Label format hint, e.g., "class_index", "one_hot", "text_sequence"
 
 
 @dataclass
 class Data:
-    """Represents data to be processed in the Mosaic network."""
+    """
+    Represents data to be processed in the Mosaic network.
+    
+    Training hints fields help understand how to load and batch data for training:
+    
+    Examples:
+        # Image classification:
+        training_task_type="classification"
+        batch_size_hint=32
+        data_loading_hints={"shuffle": True, "num_workers": 4, "pin_memory": True}
+        target_format="class_index"
+        
+        # Language modeling:
+        training_task_type="generation"
+        batch_size_hint=8
+        data_loading_hints={"shuffle": True, "num_workers": 2}
+        target_format="next_token_ids"
+        
+        # Graph learning:
+        training_task_type="node_classification"
+        batch_size_hint=1  # Often 1 graph per batch
+        data_loading_hints={"shuffle": True}
+        target_format="node_labels"
+        
+        # Reinforcement learning:
+        training_task_type="reinforcement_learning"
+        batch_size_hint=64  # Rollout batch size
+        data_loading_hints={"collect_rollouts": True, "gamma": 0.99}
+        target_format="action_distribution"
+    """
 
     file_definitions: List[FileDefinition] = field(default_factory=list)
+    # Training hints for data loading and batching
+    training_task_type: Optional[str] = None  # e.g., "classification", "generation", "regression", "reinforcement_learning"
+    batch_size_hint: Optional[int] = None  # Suggested batch size for training
+    data_loading_hints: Optional[Dict[str, Any]] = None  # Hints for data loading (shuffle, num_workers, etc.)
+    target_format: Optional[str] = None  # Expected target/label format for the model
 
 
 @dataclass
