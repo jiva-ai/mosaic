@@ -70,7 +70,8 @@ class Model:
     name: str  # Must be unique
     model_type: Optional[ModelType] = None
     onnx_location: Optional[str] = None  # Relative to MosaicConfig's models_location
-    metadata_location: Optional[str] = None  # Relative to MosaicConfig's models_location
+    binary_rep: Optional[bytes] = None  # ONNX model loaded from onnx_location
+    file_name: Optional[str] = None  # File name of the model
 
 
 @dataclass

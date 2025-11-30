@@ -5,7 +5,7 @@ import logging
 import sys
 from dataclasses import asdict
 from enum import Enum
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Union
 
 from mosaic_comms.beacon import Beacon
 from mosaic_config.config import MosaicConfig, read_config
@@ -14,7 +14,7 @@ from mosaic_planner import (
     plan_dynamic_weighted_batches,
     plan_static_weighted_shards,
 )
-from mosaic_planner.state import Plan, Session
+from mosaic_planner.state import Model, Plan, Session
 
 # Set up logging
 logger = logging.getLogger(__name__)
@@ -24,6 +24,7 @@ _beacon: Optional[Beacon] = None
 
 # Global state lists (maintained at mosaic.py level)
 _sessions: List[Session] = []
+_models: List[Model] = []
 _config: Optional[MosaicConfig] = None
 
 
@@ -218,6 +219,48 @@ def _handle_sessions_command(payload: Dict[str, Any]) -> List[Dict[str, Any]]:
     return [_convert_enums_to_values(session_dict) for session_dict in sessions_dicts]
 
 
+def _handle_add_model_command(payload: Union[Dict[str, Any], bytes]) -> Optional[Dict[str, Any]]:
+    """
+    Handle 'add_model' command - receives a Model object and adds it to the models list.
+    
+    Args:
+        payload: Model object (can be dict or bytes/pickled)
+    
+    Returns:
+        Dictionary with status information
+    """
+    import pickle
+    
+    try:
+        # Deserialize model if it's bytes
+        if isinstance(payload, bytes):
+            model = pickle.loads(payload)
+        else:
+            # Reconstruct Model from dict
+            from mosaic_planner.state import ModelType
+            model_type = None
+            if payload.get("model_type"):
+                model_type = ModelType(payload["model_type"])
+            model = Model(
+                name=payload["name"],
+                model_type=model_type,
+                onnx_location=payload.get("onnx_location"),
+                binary_rep=payload.get("binary_rep"),
+                file_name=payload.get("file_name"),
+            )
+        
+        # Add model (this will save binary to disk if present)
+        add_model(model)
+        
+        return {
+            "status": "success",
+            "message": f"Model {model.name} added successfully",
+        }
+    except Exception as e:
+        logger.error(f"Error handling add_model: {e}")
+        return {"status": "error", "message": str(e)}
+
+
 def _save_sessions_state() -> None:
     """Save sessions list to persistent state."""
     if _config is None:
@@ -263,6 +306,129 @@ def remove_session(session_id: str) -> bool:
         return True
     else:
         logger.warning(f"Session with ID {session_id} not found")
+        return False
+
+
+def _sanitize_filename(name: str) -> str:
+    """
+    Sanitize a filename for Unix filesystem compatibility.
+    
+    Replaces invalid characters (spaces, symbols) with underscores.
+    Ensures the filename is valid for Unix filesystems.
+    
+    Args:
+        name: Original filename/name
+    
+    Returns:
+        Sanitized filename safe for Unix filesystems
+    """
+    import re
+    # Replace spaces and invalid filename characters with underscore
+    # Invalid characters for Unix: / \0 and any control characters
+    # Also replace common problematic characters: spaces, < > : " | ? * and symbols
+    # Keep only alphanumeric, underscores, hyphens, and dots (dots will be stripped later)
+    sanitized = re.sub(r'[^a-zA-Z0-9._-]', '_', name)
+    # Remove leading/trailing dots and spaces (converted to underscores)
+    sanitized = sanitized.strip('._')
+    # Ensure it's not empty
+    if not sanitized:
+        sanitized = "unnamed"
+    # Limit length to reasonable size (255 chars is typical max)
+    if len(sanitized) > 255:
+        sanitized = sanitized[:255]
+    return sanitized
+
+
+def _save_models_state() -> None:
+    """Save models list to persistent state."""
+    if _config is None:
+        logger.warning("Cannot save models state: config not initialized")
+        return
+    try:
+        save_state(_config, _models, StateIdentifiers.MODELS)
+        logger.debug("Saved models state")
+    except Exception as e:
+        logger.warning(f"Failed to save models state: {e}")
+
+
+def add_model(model: Model) -> None:
+    """
+    Add a model to the models list, save ONNX binary to disk if present, and persist state.
+    
+    If the model has binary_rep (ONNX binary data), it will be saved to disk at:
+    - models_location/onnx_location/filename if onnx_location is not None
+    - models_location/filename if onnx_location is None
+    
+    The binary_rep will be set to None after saving to conserve memory.
+    The file_name field will be set to the sanitized filename.
+    
+    Args:
+        model: Model instance to add
+    """
+    global _models
+    from pathlib import Path
+    
+    # If model has binary_rep, save it to disk
+    if model.binary_rep is not None:
+        if _config is None:
+            logger.warning("Cannot save model binary: config not initialized")
+        elif not _config.models_location:
+            logger.warning("Cannot save model binary: models_location not configured")
+        else:
+            try:
+                # Sanitize the model name for use as filename
+                sanitized_name = _sanitize_filename(model.name)
+                
+                # Determine the save location
+                models_path = Path(_config.models_location)
+                if model.onnx_location:
+                    # Save to models_location/onnx_location
+                    save_dir = models_path / model.onnx_location
+                else:
+                    # Save directly to models_location
+                    save_dir = models_path
+                
+                # Ensure directory exists
+                save_dir.mkdir(parents=True, exist_ok=True)
+                
+                # Save the binary data
+                file_path = save_dir / sanitized_name
+                with open(file_path, 'wb') as f:
+                    f.write(model.binary_rep)
+                
+                # Update model: set file_name and clear binary_rep
+                model.file_name = sanitized_name
+                model.binary_rep = None
+                
+                logger.debug(f"Saved model binary to {file_path}")
+            except Exception as e:
+                logger.warning(f"Failed to save model binary: {e}")
+    
+    _models.append(model)
+    _save_models_state()
+    logger.debug(f"Added model: {model.name}")
+
+
+def remove_model(model_name: str) -> bool:
+    """
+    Remove a model from the models list by name and persist state.
+    
+    Args:
+        model_name: Name of the model to remove
+    
+    Returns:
+        True if model was found and removed, False otherwise
+    """
+    global _models
+    initial_count = len(_models)
+    _models = [m for m in _models if m.name != model_name]
+    
+    if len(_models) < initial_count:
+        _save_models_state()
+        logger.debug(f"Removed model: {model_name}")
+        return True
+    else:
+        logger.warning(f"Model with name {model_name} not found")
         return False
 
 
@@ -358,7 +524,7 @@ def main() -> None:
     global _config
     _config = config
     
-    # Step 1.5: Load Sessions from persistent state
+    # Step 1.5: Load Sessions and Models from persistent state
     logger.info("Loading Sessions from state...")
     try:
         global _sessions
@@ -374,6 +540,21 @@ def main() -> None:
         logger.warning(f"Error loading Sessions from state: {e}")
         _sessions = []
     
+    logger.info("Loading Models from state...")
+    try:
+        global _models
+        loaded_models = read_state(config, StateIdentifiers.MODELS, default=None)
+        
+        if isinstance(loaded_models, list):
+            _models = loaded_models
+            logger.info(f"Loaded {len(_models)} models from state")
+        else:
+            _models = []
+            logger.info("No models found in state, initializing empty list")
+    except Exception as e:
+        logger.warning(f"Error loading Models from state: {e}")
+        _models = []
+    
     # Step 2: Create Beacon
     logger.info("Creating Beacon instance...")
     try:
@@ -384,10 +565,11 @@ def main() -> None:
         logger.error(f"Error creating Beacon: {e}")
         sys.exit(1)
     
-    # Step 2.5: Register command handlers for sessions
+    # Step 2.5: Register command handlers for sessions and models
     logger.info("Registering command handlers...")
     try:
         _beacon.register("sessions", _handle_sessions_command)
+        _beacon.register("add_model", _handle_add_model_command)
         logger.info("Command handlers registered successfully")
     except Exception as e:
         logger.warning(f"Error registering command handlers: {e}")
