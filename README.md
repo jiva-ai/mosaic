@@ -68,7 +68,9 @@ When a node breaks down or becomes unreachable, connected nodes detect the failu
 
 For the simplest setup, configure your architecture as shown in the diagram: **one central node connected to many others**, with the other nodes sending heartbeats to the central node. This hub-and-spoke topology provides a clear control point while maintaining the flexibility to scale horizontally.
 
-# BEFORE YOU START: Core Requirements 
+> **💡 Getting Started**: See the [Worked Example: 3-Node Network](#worked-example-3-node-network) section for a complete step-by-step guide on setting up a multi-node MOSAIC network.
+
+# 👉 BEFORE YOU START: Core Requirements 
 
 You'll need the following on every server to be able to run Mosaic:
 
@@ -77,7 +79,302 @@ You'll need the following on every server to be able to run Mosaic:
 
 # Quick Installation Guidelines
 
-## Download and Install
+> **📖 Quick Start**: For a complete worked example with 3 nodes, see the [Worked Example: 3-Node Network](#worked-example-3-node-network) section below.
+
+## Download and Run
+
+### Downloading the Docker Image
+
+MOSAIC is distributed as a Docker container. The easiest way to get started is to pull the image from GitHub Container Registry:
+
+```bash
+docker pull --pull=always ghcr.io/manishjiva/mosaic-python:latest
+```
+
+**If the pull fails**, you can download the image as a tar file and load it manually:
+
+```bash
+# Download the tar file
+wget --no-check-certificate 'https://drive.google.com/uc?export=download&id=1bk_YlJ8F07fxa8NPIVDYAk_NA3w9L6Fw' -O mosaic-python_latest.tar
+
+# Load the image into Docker
+docker load -i mosaic-python_latest.tar
+```
+
+> **⚠️ Note**: The Docker image is large (several GB) because it includes all dependencies such as PyTorch and related ML libraries. The initial download may take some time depending on your internet connection.
+
+### Setting Up SSL Certificates
+
+Before running MOSAIC on any machine, you need to set up SSL certificates for secure communication between nodes. Python 3.11 or higher is required for certificate generation.
+
+**Download the certificate generation scripts:**
+
+You can find the certificate generation scripts in the [MOSAIC repository](https://github.com/jiva-ai/mosaic) under the `mosaic-security` directory, or download them directly:
+
+```bash
+wget --no-check-certificate 'https://drive.google.com/uc?export=download&id=1GEEjBU419wForLiI6_W71aLdWvCMrSbY' -O mosaic-security.tar.gz
+tar -xzf mosaic-security.tar.gz
+```
+
+**Generate certificates:**
+
+The simplest way to generate certificates is using the provided script:
+
+```bash
+cd mosaic-security
+python generate_certs.py --hostname your-server-hostname
+```
+
+This creates three files in the `certs/` directory:
+- `ca.crt` - Certificate Authority certificate
+- `server.crt` - Server certificate
+- `server.key` - Server private key
+
+**Set proper file permissions:**
+
+```bash
+chmod 600 certs/server.key    # Private key - read/write for owner only
+chmod 644 certs/server.crt    # Server certificate - readable by all
+chmod 644 certs/ca.crt        # CA certificate - readable by all
+```
+
+**Transfer certificates to all servers:**
+
+For a multi-node setup, copy all three certificate files to the same directory location on each server (for consistency). For example:
+
+```bash
+# On your local machine, after generating certificates
+scp certs/* user@node1:/home/user/mosaic/certs/
+scp certs/* user@node2:/home/user/mosaic/certs/
+scp certs/* user@node3:/home/user/mosaic/certs/
+```
+
+> **Important**: The certificate paths in your configuration file must point to where these three files are located on each server. See the [Configuration](#configuration) section below.
+
+For more detailed certificate generation options and troubleshooting, see the [mosaic-security README](mosaic-security/README.md).
+
+### Ideal Setup
+
+For the best organization, set up your MOSAIC directory structure as follows:
+
+```
+$ ls -la
+
+benchmarks/          # Benchmark data storage
+data/                # Training and inference data
+models/              # ONNX model files
+plans/               # Distribution plans
+state/               # Node state files
+mosaic-config.json   # Configuration file (passed to run_mosaic.sh)
+run_mosaic.sh        # Helper script to run the Docker container
+```
+
+This structure keeps all MOSAIC-related files organized and makes it easy to manage your deployment.
+
+### Configuration
+
+Create a `mosaic-config.json` file (or `mosaic.config`) with your node's configuration. Here's an example:
+
+```json
+{
+  "host": "192.168.0.1",
+  "heartbeat_port": 5000,
+  "comms_port": 5001,
+  "peers": [
+    {"host": "node1.example.com", "comms_port": 5001, "heartbeat_port": 5000},
+    {"host": "node2.example.com", "comms_port": 5001, "heartbeat_port": 5000}
+  ],
+  "heartbeat_frequency": 5,
+  "heartbeat_tolerance": 15,
+  "heartbeat_report_length": 300,
+  "heartbeat_wait_timeout": 2,
+  "stats_request_timeout": 30,
+  "server_crt": "/home/user/mosaic/certs/server.crt",
+  "server_key": "/home/user/mosaic/certs/server.key",
+  "ca_crt": "/home/user/mosaic/certs/ca.crt",
+  "benchmark_data_location": "/home/user/mosaic/benchmarks",
+  "run_benchmark_at_startup": false,
+  "data_location": "/home/user/mosaic/data",
+  "plans_location": "/home/user/mosaic/plans",
+  "models_location": "/home/user/mosaic/models",
+  "state_location": "/home/user/mosaic/state",
+  "data_chunk_size": 256
+}
+```
+
+**Key configuration points:**
+
+- **Certificate paths**: The `server_crt`, `server_key`, and `ca_crt` parameters must point to the actual locations of your certificate files on each server. Use fully qualified (absolute) paths to avoid confusion when copying into Docker.
+- **Peers**: The `peers` array lists which nodes this node will heartbeat to. Other nodes may heartbeat to this node without being listed here (see the worked example below).
+- **First run**: The very first time MOSAIC runs, it takes approximately 5 minutes to warm up. This is because MOSAIC assesses the machine's capabilities by running benchmarks on CPU, GPU, and disk. You can suppress this by setting `run_benchmark_at_startup` to `false` in the config.
+
+For more detailed configuration information, see the [mosaic-config README](mosaic-python/mosaic_config/README.md).
+
+### Starting MOSAIC
+
+**Download the run script:**
+
+You can download the `run_mosaic.sh` helper script from the [MOSAIC repository](https://github.com/jiva-ai/mosaic) or directly:
+
+```bash
+wget --no-check-certificate 'https://drive.google.com/uc?export=download&id=1GEEjBU419wForLiI6_W71aLdWvCMrSbY' -O run_mosaic.sh
+chmod +x run_mosaic.sh  # Make it executable
+```
+
+**Run MOSAIC:**
+
+```bash
+# Replace mosaic-config.json with the path to your actual configuration file.
+./run_mosaic.sh --config mosaic-config.json
+```
+
+For more detailed information on running MOSAIC across multiple machines, see [MULTI-MACHINE-DOCKERS.md](MULTI-MACHINE-DOCKERS.md) and the [mosaic-config README](mosaic-python/mosaic_config/README.md).
+
+### Worked Example: 3-Node Network
+
+This example demonstrates setting up a MOSAIC network with 3 machines, where Node 1 acts as the controller and Nodes 2 and 3 heartbeat to it.
+
+> **⚠️ Warning**: Multiple MOSAIC Docker containers are not meant to run on the same host. Running multiple containers on a single machine can cause resource contention (CPU, memory, GPU) and hostname sharing issues. Each node in a MOSAIC network should run on a separate physical or virtual machine with its own unique hostname and IP address.
+
+**Setup:**
+
+1. **Node 1 (Controller)**: `192.168.1.10`
+2. **Node 2**: `192.168.1.11`
+3. **Node 3**: `192.168.1.12`
+
+**Step 1: Generate and distribute certificates**
+
+On one machine (or locally), generate the certificates:
+
+```bash
+python generate_certs.py --hostname 192.168.1.10
+```
+
+Copy all three certificate files to the same directory on each server (e.g., `/home/user/mosaic/certs/`):
+
+```bash
+# Copy to Node 1
+scp certs/* user@192.168.1.10:/home/user/mosaic/certs/
+
+# Copy to Node 2
+scp certs/* user@192.168.1.11:/home/user/mosaic/certs/
+
+# Copy to Node 3
+scp certs/* user@192.168.1.12:/home/user/mosaic/certs/
+```
+
+**Step 2: Configure each node**
+
+**Node 1 configuration** (`mosaic-config.json`):
+
+```json
+{
+  "host": "192.168.1.10",
+  "heartbeat_port": 5000,
+  "comms_port": 5001,
+  "peers": [],
+  "server_crt": "/home/user/mosaic/certs/server.crt",
+  "server_key": "/home/user/mosaic/certs/server.key",
+  "ca_crt": "/home/user/mosaic/certs/ca.crt",
+  "run_benchmark_at_startup": false,
+  "data_location": "/home/user/mosaic/data",
+  "plans_location": "/home/user/mosaic/plans",
+  "models_location": "/home/user/mosaic/models",
+  "state_location": "/home/user/mosaic/state"
+}
+```
+
+Note: Node 1 has an empty `peers` array because Nodes 2 and 3 will heartbeat to it, not the other way around.
+
+**Node 2 configuration** (`mosaic-config.json`):
+
+```json
+{
+  "host": "192.168.1.11",
+  "heartbeat_port": 5000,
+  "comms_port": 5001,
+  "peers": [
+    {"host": "192.168.1.10", "comms_port": 5001, "heartbeat_port": 5000}
+  ],
+  "server_crt": "/home/user/mosaic/certs/server.crt",
+  "server_key": "/home/user/mosaic/certs/server.key",
+  "ca_crt": "/home/user/mosaic/certs/ca.crt",
+  "run_benchmark_at_startup": false,
+  "data_location": "/home/user/mosaic/data",
+  "plans_location": "/home/user/mosaic/plans",
+  "models_location": "/home/user/mosaic/models",
+  "state_location": "/home/user/mosaic/state"
+}
+```
+
+**Node 3 configuration** (`mosaic-config.json`):
+
+```json
+{
+  "host": "192.168.1.12",
+  "heartbeat_port": 5000,
+  "comms_port": 5001,
+  "peers": [
+    {"host": "192.168.1.10", "comms_port": 5001, "heartbeat_port": 5000}
+  ],
+  "server_crt": "/home/user/mosaic/certs/server.crt",
+  "server_key": "/home/user/mosaic/certs/server.key",
+  "ca_crt": "/home/user/mosaic/certs/ca.crt",
+  "run_benchmark_at_startup": false,
+  "data_location": "/home/user/mosaic/data",
+  "plans_location": "/home/user/mosaic/plans",
+  "models_location": "/home/user/mosaic/models",
+  "state_location": "/home/user/mosaic/state"
+}
+```
+
+**Step 3: Start MOSAIC on each server**
+
+On each server, run:
+
+```bash
+./run_mosaic.sh --config mosaic-config.json
+```
+
+**That's it!** Your 3-node MOSAIC network is now running. MOSAIC runs as a REPL (Read-Eval-Print Loop) - type `help` to see available commands.
+
+### Training and Inference
+
+MOSAIC runs as an interactive REPL (Read-Eval-Print Loop). When you start MOSAIC, you'll see a command prompt where you can issue commands.
+
+**Assumptions:**
+
+- Some nodes in the network may not have a copy of the training data
+- In our worked example above, assume Node 1 has the data in its `data_location` directory
+
+**Starting training:**
+
+1. Connect to Node 1's REPL (the controller node)
+2. Place your training data in Node 1's `data_location` directory
+3. Issue the `train` command and follow the step-by-step instructions
+
+**Starting inference:**
+
+1. Connect to any node's REPL
+2. Issue the `infer` command and follow the step-by-step instructions
+
+The MOSAIC system will automatically distribute workloads across available nodes based on their capabilities.
+
+### Warnings
+
+**⚠️ Known Issue - WSL/Ubuntu Windows Docker:**
+
+WSL (Windows Subsystem for Linux) with Docker on Windows is known to hang and is currently not supported. If you're using WSL, it's better to use the raw Python implementation and run with UV:
+
+```bash
+# Install UV if not already installed
+pip install uv
+
+# Run MOSAIC with UV
+uv run python -m mosaic <your-command>
+```
+
+For production deployments, use native Linux servers or cloud instances.
 
 
 

@@ -556,6 +556,8 @@ def main() -> None:
     if repl_enabled:
         if args.textual:
             logger.info("Starting Textual-based REPL...")
+            logger.info("Call 'help' to see available commands")
+            logger.info("GitHub repo with README: https://github.com/manishjiva/mosaic [NB soon to be renamed]")
             try:
                 from mosaic.textual_repl import start_textual_repl
                 start_textual_repl()
