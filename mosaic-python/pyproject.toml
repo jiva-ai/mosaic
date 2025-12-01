@@ -24,6 +24,7 @@ packages = ["mosaic_comms", "mosaic_config", "mosaic", "mosaic_planner", "mosaic
 
 [tool.uv]
 dev-dependencies = [
+    "build>=1.0.0",
     "pytest>=8.0.0",
     "Pillow>=10.0.0",
     "numpy>=1.24.0",
