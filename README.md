@@ -13,6 +13,24 @@ Instead of relying on massive, centralized models, MOSAIC fuses the outputs of d
 - **Decentralization:** Distribute learning and inference tasks across diverse, often resource-constrained, devices.
 - **Scalability & Robustness:** Dynamically adapt to changing compute resources and network conditions.
 
+## Documentation Structure
+
+This repository contains comprehensive documentation organized by topic. Here's where to find what you need:
+
+- **[README.md](README.md)** (this file): Overview, quick start guide, installation instructions, and worked examples
+- **[TECHNICAL.md](TECHNICAL.md)**: Deep technical documentation covering architecture, components, algorithms, and how MOSAIC works internally
+- **[CONFIG.md](CONFIG.md)**: Complete configuration reference with all parameters, file structure, and configuration examples
+- **[SECURITY.md](SECURITY.md)**: SSL/TLS certificate generation, security setup, and best practices
+- **[MULTI-MACHINE-DOCKERS.md](MULTI-MACHINE-DOCKERS.md)**: Detailed guide for running MOSAIC Docker containers across multiple machines with different network configurations
+- **[mosaic-python/README.md](mosaic-python/README.md)**: Python implementation overview and links to technical documentation
+- **[mosaic-java/README.md](mosaic-java/README.md)**: Java implementation information (currently in development)
+
+**Quick Navigation:**
+- **Getting Started**: Start here → [Quick Installation Guidelines](#quick-installation-guidelines) and [Worked Example: 3-Node Network](#worked-example-3-node-network)
+- **Configuration**: See [Configuration](#configuration) section below, or [CONFIG.md](CONFIG.md) for complete reference
+- **Security Setup**: See [Setting Up SSL Certificates](#setting-up-ssl-certificates) or [SECURITY.md](SECURITY.md) for detailed instructions
+- **Understanding How It Works**: See [Understanding the Architecture](#understanding-the-architecture) or [TECHNICAL.md](TECHNICAL.md) for deep technical details
+- **Multi-Machine Deployment**: See [MULTI-MACHINE-DOCKERS.md](MULTI-MACHINE-DOCKERS.md) for advanced Docker deployment scenarios
 
 ## Technical Components
 
@@ -107,6 +125,8 @@ docker load -i mosaic-python_latest.tar
 
 Before running MOSAIC on any machine, you need to set up SSL certificates for secure communication between nodes. Python 3.11 or higher is required for certificate generation.
 
+> **📖 For detailed SSL setup information**, see [SECURITY.md](SECURITY.md).
+
 **Download the certificate generation scripts:**
 
 You can find the certificate generation scripts in the [MOSAIC repository](https://github.com/jiva-ai/mosaic) under the `mosaic-security` directory, or download them directly:
@@ -151,7 +171,7 @@ scp certs/* user@node3:/home/user/mosaic/certs/
 
 > **Important**: The certificate paths in your configuration file must point to where these three files are located on each server. See the [Configuration](#configuration) section below.
 
-For more detailed certificate generation options and troubleshooting, see the [mosaic-security README](mosaic-security/README.md).
+For more detailed certificate generation options, troubleshooting, and security best practices, see [SECURITY.md](SECURITY.md).
 
 ### Ideal Setup
 
@@ -208,7 +228,7 @@ Create a `mosaic-config.json` file (or `mosaic.config`) with your node's configu
 - **Peers**: The `peers` array lists which nodes this node will heartbeat to. Other nodes may heartbeat to this node without being listed here (see the worked example below).
 - **First run**: The very first time MOSAIC runs, it takes approximately 5 minutes to warm up. This is because MOSAIC assesses the machine's capabilities by running benchmarks on CPU, GPU, and disk. You can suppress this by setting `run_benchmark_at_startup` to `false` in the config.
 
-For more detailed configuration information, see the [mosaic-config README](mosaic-python/mosaic_config/README.md).
+For more detailed configuration information, see the [mosaic-config README](CONFIG.md).
 
 ### Starting MOSAIC
 
@@ -228,7 +248,7 @@ chmod +x run_mosaic.sh  # Make it executable
 ./run_mosaic.sh --config mosaic-config.json
 ```
 
-For more detailed information on running MOSAIC across multiple machines, see [MULTI-MACHINE-DOCKERS.md](MULTI-MACHINE-DOCKERS.md) and the [mosaic-config README](mosaic-python/mosaic_config/README.md).
+For more detailed information on running MOSAIC across multiple machines, see [MULTI-MACHINE-DOCKERS.md](MULTI-MACHINE-DOCKERS.md) and the [mosaic-config README](CONFIG.md).
 
 ### Worked Example: 3-Node Network
 
