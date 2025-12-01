@@ -349,7 +349,7 @@ build_docker_command() {
     # Base command parts
     DOCKER_ARGS+=("docker")
     DOCKER_ARGS+=("run")
-    DOCKER_ARGS+=("-it")
+    DOCKER_ARGS+=("-ait")
     DOCKER_ARGS+=("--name" "$CONTAINER_NAME")
     DOCKER_ARGS+=("--restart" "unless-stopped")
     
