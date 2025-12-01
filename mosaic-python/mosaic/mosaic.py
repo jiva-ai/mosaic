@@ -92,29 +92,20 @@ def _format_receive_heartbeat_table(statuses) -> str:
 
 def cmd_shb() -> None:
     """Show send heartbeat statuses."""
-    if _beacon is None:
-        print("Error: Beacon not initialized")
-        return
-    
-    statuses = _beacon.send_heartbeat_statuses
-    print(_format_send_heartbeat_table(statuses))
+    from mosaic.repl_commands import execute_shb
+    execute_shb(print)
 
 
 def cmd_rhb() -> None:
     """Show receive heartbeat statuses."""
-    if _beacon is None:
-        print("Error: Beacon not initialized")
-        return
-    
-    statuses = _beacon.receive_heartbeat_statuses
-    print(_format_receive_heartbeat_table(statuses))
+    from mosaic.repl_commands import execute_rhb
+    execute_rhb(print)
 
 
 def cmd_hb() -> None:
     """Show both send and receive heartbeat statuses."""
-    cmd_shb()
-    print()  # Empty line between tables
-    cmd_rhb()
+    from mosaic.repl_commands import execute_hb
+    execute_hb(print)
 
 
 def calculate_data_distribution(method: Optional[str] = None) -> None:
@@ -163,26 +154,16 @@ def calculate_data_distribution(method: Optional[str] = None) -> None:
 
 def cmd_calcd(method: Optional[str] = None) -> None:
     """Calculate distribution of data/workloads."""
-    calculate_data_distribution(method)
+    from mosaic.repl_commands import execute_calcd
+    execute_calcd(print, method)
 
 
 def cmd_help() -> None:
     """Show help message with available commands."""
-    help_text = """
-Available commands:
-  shb                    - Show send heartbeat statuses
-  rhb                    - Show receive heartbeat statuses
-  hb                     - Show both send and receive heartbeat statuses
-  calcd [method]         - Calculate distribution (method: weighted_shard or weighted_batches)
-  help                   - Show this help message
-  exit/quit/q            - Exit the REPL
-"""
-    print(help_text.strip())
+    from mosaic.repl_commands import execute_help
+    execute_help(print)
 
 
-def show_usage() -> None:
-    """Show usage message for unknown commands."""
-    print("Unknown command. Type 'help' for available commands.")
 
 
 def _convert_enums_to_values(obj: Any) -> Any:
@@ -444,24 +425,8 @@ def interpret_command(command: str) -> None:
     if not command:
         return
     
-    # Split command and arguments
-    parts = command.split()
-    cmd = parts[0].lower()
-    args = parts[1:] if len(parts) > 1 else []
-    
-    # Route to appropriate command handler
-    if cmd == "shb":
-        cmd_shb()
-    elif cmd == "rhb":
-        cmd_rhb()
-    elif cmd == "hb":
-        cmd_hb()
-    elif cmd == "calcd":
-        cmd_calcd(args[0] if args else None)
-    elif cmd == "help":
-        cmd_help()
-    else:
-        show_usage()
+    from mosaic.repl_commands import process_command
+    process_command(command, print)
 
 def repl_loop() -> None:
     """
@@ -496,6 +461,11 @@ def main() -> None:
         type=str,
         default="true",
         help="Start REPL (true/false, default: true)",
+    )
+    parser.add_argument(
+        "--textual",
+        action="store_true",
+        help="Use Textual-based REPL instead of simple REPL",
     )
     
     args = parser.parse_args()
@@ -584,11 +554,25 @@ def main() -> None:
     
     # Step 4: Start REPL if enabled
     if repl_enabled:
-        logger.info("Starting REPL...")
-        try:
-            repl_loop()
-        except Exception as e:
-            logger.error(f"Error in REPL: {e}")
+        if args.textual:
+            logger.info("Starting Textual-based REPL...")
+            try:
+                from mosaic.textual_repl import start_textual_repl
+                start_textual_repl()
+            except ImportError:
+                logger.error("Textual library not installed. Install with: pip install textual")
+                logger.info("Falling back to simple REPL...")
+                repl_loop()
+            except Exception as e:
+                logger.error(f"Error in Textual REPL: {e}")
+                logger.info("Falling back to simple REPL...")
+                repl_loop()
+        else:
+            logger.info("Starting simple REPL...")
+            try:
+                repl_loop()
+            except Exception as e:
+                logger.error(f"Error in REPL: {e}")
     else:
         logger.info("REPL disabled, running in background mode")
         # Keep the main thread alive

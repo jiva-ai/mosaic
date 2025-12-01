@@ -57,3 +57,5 @@ Thumbs.db
 tests/test_data/
 tests/temp_state/
 .cursorrules
+receive_heartbeat_statuses.pkl
+send_heartbeat_statuses.pkl
