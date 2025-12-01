@@ -90,7 +90,7 @@ docker run -d \
 **mosaic.config:**
 ```json
 {
-  "host": "0.0.0.0",
+  "host": "192.168.1.100",
   "heartbeat_port": 5000,
   "comms_port": 5001,
   "peers": [
@@ -125,7 +125,7 @@ docker run -d \
 **mosaic.config:**
 ```json
 {
-  "host": "0.0.0.0",
+  "host": "192.168.1.101",
   "heartbeat_port": 5000,
   "comms_port": 5001,
   "peers": [
@@ -157,9 +157,9 @@ docker run -d \
 
 ## Important Points
 
-### 1. Host Configuration (`"host": "0.0.0.0"`)
+### 1. Host Configuration (`"host": "0.0.0.0"`) Might be Required
 
-- **Inside the container**: Use `"host": "0.0.0.0"` to bind to all network interfaces
+- **Inside the container**: Use `"host": "0.0.0.0"` to bind to all network interfaces (on some network interfaces this seems to be required)
 - This allows the container to receive connections from outside the container
 - The container will listen on all interfaces, and Docker port mapping will forward traffic
 
@@ -169,6 +169,7 @@ docker run -d \
 - **NOT** the container's internal IP (e.g., `172.17.0.2`)
 - **NOT** `localhost` or `127.0.0.1` (these won't work across machines)
 - Use the IP address that other machines can reach over the network
+- Note the network has only been tested with IP address configs, however there is no real reason why a readable hostname won't work.
 
 ### 3. Port Mapping
 
@@ -259,7 +260,7 @@ shb         # Check sent heartbeats
 ### Machine 1 (192.168.1.100)
 ```json
 {
-  "host": "0.0.0.0",
+  "host": "192.168.1.100",
   "heartbeat_port": 5000,
   "comms_port": 5001,
   "peers": [
@@ -272,7 +273,7 @@ shb         # Check sent heartbeats
 ### Machine 2 (192.168.1.101)
 ```json
 {
-  "host": "0.0.0.0",
+  "host": "192.168.1.101",
   "heartbeat_port": 5000,
   "comms_port": 5001,
   "peers": [
@@ -285,7 +286,7 @@ shb         # Check sent heartbeats
 ### Machine 3 (192.168.1.102)
 ```json
 {
-  "host": "0.0.0.0",
+  "host": "192.168.1.102",
   "heartbeat_port": 5000,
   "comms_port": 5001,
   "peers": [
@@ -299,12 +300,12 @@ shb         # Check sent heartbeats
 
 ### Option 1: Host Network Mode (Linux)
 ✅ **Run with**: `--network host`  
-✅ **Container config**: `"host": "0.0.0.0"`  
+✅ **Container config**: `"host": "0.0.0.0"` may be required, but try with the normal IP first
 ✅ **Peer config**: Use host machine's IP address  
 ✅ **No port mapping needed**  
 
 ### Option 2: Bridge Network Mode (All Platforms)
-✅ **Container config**: `"host": "0.0.0.0"` (bind to all interfaces)  
+✅ **Container config**: `"host": "0.0.0.0"` (bind to all interfaces) may be required, but try with the normal IP first
 ✅ **Peer config**: Use host machine's IP address (reachable from network)  
 ✅ **Port mapping**: Map all required ports (`-p` flags)  
 ✅ **Network**: Ensure machines can reach each other (firewall, routing)  
