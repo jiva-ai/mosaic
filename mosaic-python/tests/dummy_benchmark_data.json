@@ -4,12 +4,12 @@
   "disk": {
     "write_speed_mbps": 150.5,
     "read_speed_mbps": 200.3,
-    "test_size_bytes": 1048576
+    "test_size_bytes": 524288
   },
   "cpu": {
     "gflops": 75.8,
-    "test_size": 1000,
-    "iterations": 100
+    "test_size": 200,
+    "iterations": 10
   },
   "gpus": [
     {
@@ -27,8 +27,8 @@
   ],
   "ram": {
     "bandwidth_gbps": 25.5,
-    "test_size_mb": 10.0,
-    "iterations": 100
+    "test_size_mb": 1.0,
+    "iterations": 20
   },
   "network_capacity": 1000
 }

@@ -190,8 +190,8 @@ def _benchmark_disk_speed(benchmark_data_location: Optional[Path]) -> Dict[str, 
         # Ensure directory exists
         benchmark_data_location.mkdir(parents=True, exist_ok=True)
 
-        # Use a small test file for speed (1MB)
-        test_file_size = 1024 * 1024  # 1 MB
+        # Use a small test file for speed (512KB)
+        test_file_size = 512 * 1024  # 512 KB
         test_file = benchmark_data_location / ".benchmark_test.tmp"
 
         # Test write speed
@@ -238,9 +238,9 @@ def _benchmark_cpu_flops() -> Dict[str, Any]:
     """
     try:
         if np is not None:
-            # Use NumPy for faster computation
-            size = 1000
-            iterations = 100
+            # Use NumPy for faster computation - lightweight benchmark
+            size = 200
+            iterations = 10
 
             # Matrix multiplication benchmark
             a = np.random.rand(size, size).astype(np.float32)
@@ -263,8 +263,8 @@ def _benchmark_cpu_flops() -> Dict[str, Any]:
             }
         else:
             # Fallback to pure Python (slower but works without numpy)
-            size = 100
-            iterations = 10
+            size = 50
+            iterations = 5
 
             # Simple floating point operations
             start_time = time.time_ns() // 1_000_000
@@ -356,16 +356,15 @@ def _benchmark_gpu_flops() -> List[Dict[str, Any]]:
                         device = torch.device(f"cuda:{i}")
                         torch.cuda.set_device(i)
 
-                        # Small matrix multiplication for speed
-                        size = 500
-                        iterations = 50
+                        # Lightweight matrix multiplication for speed
+                        size = 100
+                        iterations = 5
 
                         a = torch.randn(size, size, device=device, dtype=torch.float32)
                         b = torch.randn(size, size, device=device, dtype=torch.float32)
 
-                        # Warmup
-                        for _ in range(5):
-                            _ = torch.matmul(a, b)
+                        # Minimal warmup (1 iteration)
+                        _ = torch.matmul(a, b)
                         torch.cuda.synchronize()
 
                         # Benchmark
@@ -546,9 +545,9 @@ def _benchmark_ram_speed() -> Dict[str, Any]:
     """
     try:
         if np is not None:
-            # Use NumPy for memory operations
-            size = 10 * 1024 * 1024  # 10 MB
-            iterations = 100
+            # Use NumPy for memory operations - lightweight benchmark
+            size = 1 * 1024 * 1024  # 1 MB
+            iterations = 20
 
             # Allocate arrays
             a = np.random.rand(size).astype(np.float32)
@@ -571,8 +570,8 @@ def _benchmark_ram_speed() -> Dict[str, Any]:
             }
         else:
             # Fallback to pure Python
-            size = 1024 * 1024  # 1 MB
-            iterations = 10
+            size = 512 * 1024  # 512 KB
+            iterations = 5
 
             a = [0.0] * size
             b = [0.0] * size

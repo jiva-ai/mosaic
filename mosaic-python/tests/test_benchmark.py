@@ -80,7 +80,7 @@ class TestBenchmarkDiskSpeed:
         assert "write_speed_mbps" in result
         assert "read_speed_mbps" in result
         assert "test_size_bytes" in result
-        assert result["test_size_bytes"] == 1024 * 1024
+        assert result["test_size_bytes"] == 512 * 1024
         assert result["write_speed_mbps"] > 0
         assert result["read_speed_mbps"] > 0
 
@@ -121,8 +121,8 @@ class TestBenchmarkCpuFlops:
             assert "gflops" in result
             assert "test_size" in result
             assert "iterations" in result
-            assert result["test_size"] == 1000
-            assert result["iterations"] == 100
+            assert result["test_size"] == 200
+            assert result["iterations"] == 10
 
     def test_benchmark_cpu_flops_without_numpy(self):
         """Test CPU benchmark without NumPy (pure Python fallback)."""
@@ -137,8 +137,8 @@ class TestBenchmarkCpuFlops:
             assert "iterations" in result
             assert "note" in result
             assert result["note"] == "pure_python"
-            assert result["test_size"] == 100
-            assert result["iterations"] == 10
+            assert result["test_size"] == 50
+            assert result["iterations"] == 5
 
     def test_benchmark_cpu_flops_error_handling(self):
         """Test CPU benchmark error handling."""
@@ -356,8 +356,8 @@ class TestBenchmarkRamSpeed:
             assert "bandwidth_gbps" in result
             assert "test_size_mb" in result
             assert "iterations" in result
-            assert result["test_size_mb"] == 10.0
-            assert result["iterations"] == 100
+            assert result["test_size_mb"] == 1.0
+            assert result["iterations"] == 20
 
     def test_benchmark_ram_speed_without_numpy(self):
         """Test RAM benchmark without NumPy (pure Python fallback)."""
@@ -372,8 +372,8 @@ class TestBenchmarkRamSpeed:
             assert "iterations" in result
             assert "note" in result
             assert result["note"] == "pure_python"
-            assert result["test_size_mb"] == 1.0
-            assert result["iterations"] == 10
+            assert result["test_size_mb"] == 0.5  # 512 KB = 0.5 MB
+            assert result["iterations"] == 5
 
     def test_benchmark_ram_speed_error_handling(self):
         """Test RAM benchmark error handling."""
@@ -687,10 +687,10 @@ class TestIntegration:
         test_results = {
             "timestamp_ms": 1234567890,
             "host": "test-host",
-            "disk": {"write_speed_mbps": 100.0, "read_speed_mbps": 150.0, "test_size_bytes": 1048576},
-            "cpu": {"gflops": 50.0, "test_size": 1000, "iterations": 100},
+            "disk": {"write_speed_mbps": 100.0, "read_speed_mbps": 150.0, "test_size_bytes": 524288},
+            "cpu": {"gflops": 50.0, "test_size": 200, "iterations": 10},
             "gpus": [{"gpu_id": 0, "gflops": 1000.0, "type": "nvidia"}],
-            "ram": {"bandwidth_gbps": 20.0, "test_size_mb": 10.0, "iterations": 100},
+            "ram": {"bandwidth_gbps": 20.0, "test_size_mb": 1.0, "iterations": 20},
             "network_capacity": 1000,
         }
 
