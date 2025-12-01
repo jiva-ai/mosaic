@@ -27,10 +27,10 @@ Uses Docker's bridge network with port mapping - requires manual IP configuratio
 
 ### Configuration Setup
 
-**mosaic.config (same on all machines):**
+**mosaic.config (same on all machines except for the hostname):**
 ```json
 {
-  "host": "0.0.0.0",
+  "host": "192.168.x.y",
   "heartbeat_port": 5000,
   "comms_port": 5001,
   "peers": [
