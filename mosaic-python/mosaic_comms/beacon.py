@@ -120,7 +120,6 @@ class Beacon:
         self._chunk_storage: Dict[str, Dict[str, Any]] = {}
         
         # Register default command handlers
-        self.register("add_peer", self._handle_add_peer)
         self.register("ping", self._handle_ping_test)
         self.register("stats", self._handle_stats)
         self.register("exdplan", self._handle_execute_data_plan)
@@ -1003,45 +1002,6 @@ class Beacon:
                     sock.close()
                 except Exception:
                     pass
-
-    def _handle_add_peer(self, payload: Dict[str, Any]) -> None:
-        """
-        Handle add_peer command.
-
-        Args:
-            payload: Dictionary with host, comms_port, and heartbeat_port
-        """
-        # Extract required fields
-        host = payload.get("host")
-        comms_port = payload.get("comms_port")
-        heartbeat_port = payload.get("heartbeat_port")
-
-        if host is None or comms_port is None or heartbeat_port is None:
-            logger.warning("add_peer payload missing required fields (host, comms_port, heartbeat_port)")
-            return
-
-        # Validate and convert ports to integers
-        try:
-            comms_port = int(comms_port)
-            heartbeat_port = int(heartbeat_port)
-        except (ValueError, TypeError) as e:
-            logger.warning(f"add_peer payload has invalid port values: {e}")
-            return
-
-        # Check if peer already exists
-        for existing_peer in self.config.peers:
-            if (
-                existing_peer.host == host
-                and existing_peer.comms_port == comms_port
-                and existing_peer.heartbeat_port == heartbeat_port
-            ):
-                logger.info(f"Peer {host}:{comms_port}/{heartbeat_port} already exists, skipping")
-                return
-
-        # Create and add new peer
-        new_peer = Peer(host=host, comms_port=comms_port, heartbeat_port=heartbeat_port)
-        self.config.peers.append(new_peer)
-        logger.info(f"Added new peer: {host}:{comms_port}/{heartbeat_port}")
 
     def _handle_ping_test(self, payload: Union[Dict[str, Any], bytes]) -> Union[Dict[str, Any], bytes]:
         """

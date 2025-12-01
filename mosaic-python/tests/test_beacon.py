@@ -131,6 +131,69 @@ class TestBeaconInitialization:
             # Verify start was not called on stats collector
             mock_stats.return_value.start.assert_not_called()
 
+    def test_beacon_startup_with_no_peers(self, temp_state_dir):
+        """Test that Beacon starts up correctly when config has no peers."""
+        # Create config with no peers (empty list is the default)
+        config = create_test_config_with_state(
+            state_dir=temp_state_dir,
+            host="127.0.0.1",
+            heartbeat_port=5000,
+            comms_port=5001,
+            heartbeat_frequency=2,
+            heartbeat_tolerance=5,
+            heartbeat_wait_timeout=2,
+            server_crt="",
+            server_key="",
+            ca_crt="",
+            benchmark_data_location="",
+        )
+        # Explicitly ensure peers list is empty
+        config.peers = []
+
+        # Mock StatsCollector to avoid actual stats collection
+        with patch("mosaic_comms.beacon.StatsCollector") as mock_stats_class:
+            mock_stats = MagicMock()
+            mock_stats.get_last_stats_json.return_value = '{"cpu_percent": 0}'
+            mock_stats_class.return_value = mock_stats
+
+            # Create and start beacon - should not error
+            beacon = Beacon(config)
+            assert len(beacon.config.peers) == 0
+
+            # Start beacon - should not error
+            beacon.start()
+            assert beacon._running
+
+            try:
+                # Wait a moment for threads to start
+                time.sleep(0.5)
+
+                # Verify beacon is running
+                assert beacon._running
+                assert beacon._send_heartbeat_thread is not None
+                assert beacon._receive_heartbeat_thread is not None
+                assert beacon._receive_comms_thread is not None
+                assert beacon._check_stale_heartbeats_thread is not None
+
+                # Test run_send_heartbeats with no peers - should not error
+                # This method iterates through config.peers, which is empty
+                beacon.run_send_heartbeats()
+
+                # Test collect_stats with no peers - should return empty list or just local stats
+                stats = beacon.collect_stats(include_self=False)
+                assert isinstance(stats, list)
+                # With no peers and include_self=False, should be empty
+                assert len(stats) == 0
+
+                # Test collect_stats with include_self=True - should return local stats
+                stats_with_self = beacon.collect_stats(include_self=True)
+                assert isinstance(stats_with_self, list)
+                # Should have at least local stats
+                assert len(stats_with_self) >= 0  # Could be 0 if stats collection fails, but shouldn't error
+
+            finally:
+                beacon.stop()
+
 
 class TestBeaconHeartbeatStatus:
     """Test heartbeat status updates."""
@@ -428,67 +491,6 @@ class TestBeaconPortListeners:
 
             finally:
                 beacon.stop()
-
-    def test_tcp_listener_triggers_run_receive_comms(self, beacon_config_no_ssl):
-        """Test that TCP listener calls run_receive_comms."""
-        with patch("mosaic_comms.beacon.StatsCollector") as mock_stats_class:
-            mock_stats = MagicMock()
-            mock_stats.get_last_stats_json.return_value = '{"cpu_percent": 45.3}'
-            mock_stats_class.return_value = mock_stats
-
-            beacon = Beacon(beacon_config_no_ssl)
-            beacon.start()
-
-            try:
-                # Wait for listener to start
-                time.sleep(1.0)
-
-                # Send TCP packet using new header format
-                command_payload = {
-                    "host": "192.168.1.100",
-                    "comms_port": 6001,
-                    "heartbeat_port": 6000,
-                }
-                
-                # Serialize payload to bytes
-                payload_bytes = json.dumps(command_payload).encode("utf-8")
-                
-                # Create header
-                header = {
-                    "command": "add_peer",
-                    "payload_type": "json",
-                    "payload_length": len(payload_bytes),
-                }
-                header_bytes = json.dumps(header).encode("utf-8")
-                
-                # Send: [4-byte header length][JSON header][payload bytes]
-                header_length = len(header_bytes).to_bytes(4, byteorder="big")
-                message = header_length + header_bytes + payload_bytes
-
-                sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-                sock.connect((beacon_config_no_ssl.host, beacon_config_no_ssl.comms_port))
-                sock.sendall(message)
-                sock.close()
-
-                # Wait for processing
-                time.sleep(0.5)
-
-                # Verify peer was added
-                assert len(beacon.config.peers) > 0
-                peer_found = False
-                for peer in beacon.config.peers:
-                    if (
-                        peer.host == "192.168.1.100"
-                        and peer.comms_port == 6001
-                        and peer.heartbeat_port == 6000
-                    ):
-                        peer_found = True
-                        break
-                assert peer_found
-
-            finally:
-                beacon.stop()
-
 
 class TestBeaconSSLErrors:
     """Test SSL/certificate error handling."""

@@ -597,6 +597,25 @@ class TestThreading:
 class TestStartupBenchmarks:
     """Test cases for startup benchmark functionality."""
 
+    def test_start_skips_benchmarks_by_default_when_benchmarks_exist(self, mock_config, mock_psutil):
+        """Test that benchmarks are skipped by default (run_benchmark_at_startup=False) when benchmarks exist."""
+        # mock_config doesn't set run_benchmark_at_startup, so it defaults to False
+        with patch("mosaic_stats.stats_collector.psutil", mock_psutil), patch(
+            "mosaic_stats.stats_collector.benchmarks_captured", return_value=True
+        ) as mock_captured, patch(
+            "mosaic_stats.stats_collector.save_benchmarks"
+        ) as mock_save:
+            collector = StatsCollector(mock_config)
+            # Verify default is False
+            assert collector.config.run_benchmark_at_startup is False
+            collector.start()
+
+            # Should NOT run benchmarks because flag is False (default) and benchmarks exist
+            mock_save.assert_not_called()
+            mock_captured.assert_called_once_with(str(mock_config.benchmark_data_location))
+
+            collector.stop()
+
     def test_start_runs_benchmarks_when_flag_true(self, mock_config, mock_psutil, tmp_path):
         """Test that benchmarks run when run_benchmark_at_startup is True."""
         config = MosaicConfig(
@@ -675,6 +694,50 @@ class TestStartupBenchmarks:
             mock_captured.assert_not_called()
 
             collector.stop()
+
+    def test_start_skips_benchmarks_when_location_is_falsy(self, mock_psutil):
+        """Test that benchmarks are skipped when benchmark_data_location is falsy (None, False, or empty)."""
+        # Test with None
+        config = MosaicConfig(
+            heartbeat_report_length=60,
+            benchmark_data_location="",  # Empty string is falsy
+            run_benchmark_at_startup=True,  # Even with flag True, should not run
+        )
+        # Set to None to test None case
+        config.benchmark_data_location = None  # type: ignore
+
+        with patch("mosaic_stats.stats_collector.psutil", mock_psutil), patch(
+            "mosaic_stats.stats_collector.benchmarks_captured"
+        ) as mock_captured, patch("mosaic_stats.stats_collector.save_benchmarks") as mock_save:
+            collector = StatsCollector(config)
+            collector.start()
+
+            # Should NOT run benchmarks or check for them, even with run_benchmark_at_startup=True
+            mock_save.assert_not_called()
+            mock_captured.assert_not_called()
+
+            collector.stop()
+
+        # Test with False (falsy value)
+        config2 = MosaicConfig(
+            heartbeat_report_length=60,
+            benchmark_data_location="",
+            run_benchmark_at_startup=True,
+        )
+        # Set to False to test falsy behavior
+        config2.benchmark_data_location = False  # type: ignore
+
+        with patch("mosaic_stats.stats_collector.psutil", mock_psutil), patch(
+            "mosaic_stats.stats_collector.benchmarks_captured"
+        ) as mock_captured2, patch("mosaic_stats.stats_collector.save_benchmarks") as mock_save2:
+            collector2 = StatsCollector(config2)
+            collector2.start()
+
+            # Should NOT run benchmarks or check for them, even with run_benchmark_at_startup=True
+            mock_save2.assert_not_called()
+            mock_captured2.assert_not_called()
+
+            collector2.stop()
 
     def test_start_handles_benchmark_errors(self, mock_config, mock_psutil, tmp_path):
         """Test that benchmark errors don't prevent stats collector from starting."""
