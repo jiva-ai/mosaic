@@ -939,6 +939,11 @@ class Beacon:
                     )
                     if self.config.ca_crt:
                         ssl_context.load_verify_locations(cafile=self.config.ca_crt)
+                    # Disable hostname verification for shared certificates
+                    # When the same certificate is used on multiple nodes, hostname verification
+                    # will fail because the certificate CN/SAN may not match the connecting hostname.
+                    # We still verify the certificate chain (CA signature), which provides security.
+                    ssl_context.check_hostname = False
                 except Exception as e:
                     logger.error(f"Failed to create SSL context for send_command: {e}")
                     return None
@@ -953,7 +958,8 @@ class Beacon:
             # Wrap with SSL if context is available
             if ssl_context:
                 try:
-                    sock = ssl_context.wrap_socket(sock, server_hostname=host)
+                    # Don't pass server_hostname since we disabled hostname verification
+                    sock = ssl_context.wrap_socket(sock, server_hostname=None)
                 except ssl.SSLError as e:
                     logger.error(f"SSL handshake failed with {host}:{port}: {e}")
                     return None

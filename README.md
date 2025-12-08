@@ -112,8 +112,10 @@ docker pull --pull=always ghcr.io/manishjiva/mosaic-python:latest
 **If the pull fails**, you can download the image as a tar file and load it manually:
 
 ```bash
-# Download the tar file
-wget --no-check-certificate 'https://drive.google.com/uc?export=download&id=1bk_YlJ8F07fxa8NPIVDYAk_NA3w9L6Fw' -O mosaic-python_latest.tar
+# Install gdown first, if not done already
+pip install gdown
+# Download the folder (gdown will handle the zipping)
+gdown 1bk_YlJ8F07fxa8NPIVDYAk_NA3w9L6Fw -O mosaic-python_latest.tar
 
 # Load the image into Docker
 docker load -i mosaic-python_latest.tar
@@ -131,26 +133,49 @@ Before running MOSAIC on any machine, you need to set up SSL certificates for se
 
 **Download the certificate generation scripts:**
 
-You can find the certificate generation scripts in the [MOSAIC repository](https://github.com/jiva-ai/mosaic) under the `mosaic-security` directory, or download them directly:
+You can find the certificate generation scripts in the [MOSAIC repository](https://github.com/jiva-ai/mosaic/tree/main/mosaic-security), or download them directly:
 
 ```bash
-wget --no-check-certificate 'https://drive.google.com/uc?export=download&id=1GEEjBU419wForLiI6_W71aLdWvCMrSbY' -O mosaic-security.tar.gz
-tar -xzf mosaic-security.tar.gz
+wget https://raw.githubusercontent.com/jiva-ai/mosaic/main/mosaic-security/generate_certs.py
+wget https://raw.githubusercontent.com/jiva-ai/mosaic/main/mosaic-security/generate_certs.sh
+wget https://raw.githubusercontent.com/jiva-ai/mosaic/main/mosaic-security/requirements.txt
 ```
+
+Or using `gdown` from Google Drive
+
+```bash
+# Install gdown first, if not done already
+pip install gdown
+
+# Download the folder (gdown will handle the zipping)
+gdown --folder https://drive.google.com/drive/folders/1RdWjpUuhYJPMsM4858Jeam7ighFB8nrI
+```
+
+Windows `bat` and `ps1` files are also in the [same directory](https://github.com/jiva-ai/mosaic/tree/main/mosaic-security), if you're running Windows rather than Linux/Mac.
 
 **Generate certificates:**
 
-The simplest way to generate certificates is using the provided script:
+For a **multi-node setup** (recommended), generate certificates that include all node hostnames/IPs in the Subject Alternative Name (SAN) extension. This allows the same certificate files to be used on all nodes:
 
 ```bash
-cd mosaic-security
-python generate_certs.py --hostname your-server-hostname
+chmod +x generate_certs.sh
+# Include all node IPs/hostnames so the same cert works on all nodes
+./generate_certs.sh --hostname 192.168.1.10 --additional-hostnames 192.168.1.11 192.168.1.12
+```
+
+For a **single-node setup**, you can use:
+
+```bash
+chmod +x generate_certs.sh
+./generate_certs.sh --hostname your-server-hostname
 ```
 
 This creates three files in the `certs/` directory:
 - `ca.crt` - Certificate Authority certificate
-- `server.crt` - Server certificate
+- `server.crt` - Server certificate (includes all hostnames/IPs in SAN for multi-node)
 - `server.key` - Server private key
+
+> **💡 Multi-Node Tip**: When using the same certificate files on multiple nodes, include all node IPs/hostnames using `--additional-hostnames`. This ensures SSL connections work between any pair of nodes. MOSAIC automatically disables strict hostname verification for shared certificates while still verifying the certificate chain (CA signature) for security.
 
 **Set proper file permissions:**
 
@@ -239,8 +264,9 @@ For more detailed configuration information, see the [mosaic-config README](CONF
 You can download the `run_mosaic.sh` helper script from the [MOSAIC repository](https://github.com/jiva-ai/mosaic) or directly:
 
 ```bash
-wget --no-check-certificate 'https://drive.google.com/uc?export=download&id=1GEEjBU419wForLiI6_W71aLdWvCMrSbY' -O run_mosaic.sh
+gdown 1GEEjBU419wForLiI6_W71aLdWvCMrSbY -O run_mosaic.sh
 chmod +x run_mosaic.sh  # Make it executable
+# `dos2unix run_mosaic.sh` may be required
 ```
 
 **Run MOSAIC:**
@@ -278,11 +304,14 @@ This example demonstrates setting up a MOSAIC network with 3 machines, where Nod
 
 **Step 1: Generate and distribute certificates**
 
-On one machine (or locally), generate the certificates:
+On one machine (or locally), generate the certificates with all node IPs included:
 
 ```bash
-python generate_certs.py --hostname 192.168.1.10
+# Include all node IPs so the same certificate works on all nodes
+python generate_certs.py --hostname 192.168.1.10 --additional-hostnames 192.168.1.11 192.168.1.12
 ```
+
+This generates certificates that include all three node IPs in the Subject Alternative Name (SAN) extension, allowing the same certificate files to be used on all nodes.
 
 Copy all three certificate files to the same directory on each server (e.g., `/home/user/mosaic/certs/`):
 

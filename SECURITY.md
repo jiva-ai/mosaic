@@ -29,6 +29,10 @@ python generate_certs.py
 # Generate certificates for a specific hostname
 python generate_certs.py --hostname my-server.example.com
 
+# Generate certificates for multi-node setup (recommended)
+# Include all node IPs/hostnames so the same certificate works on all nodes
+python generate_certs.py --hostname 192.168.1.10 --additional-hostnames 192.168.1.11 192.168.1.12 192.168.1.13
+
 # Generate certificates in a custom directory
 python generate_certs.py --output-dir /etc/mosaic/certs
 
@@ -42,6 +46,8 @@ python generate_certs.py --validity-days 730 --key-size 4096
 ```bash
 ./generate_certs.sh
 ./generate_certs.sh --hostname my-server.example.com
+# For multi-node setup:
+./generate_certs.sh --hostname 192.168.1.10 --additional-hostnames 192.168.1.11 192.168.1.12
 ```
 
 **Windows (Command Prompt):**
@@ -59,10 +65,13 @@ generate_certs.bat --hostname my-server.example.com
 ### Command-Line Options
 
 ```
---output-dir DIR     Directory to output certificate files (default: certs)
---hostname HOSTNAME  Hostname/CN for the server certificate (default: localhost)
---validity-days DAYS Certificate validity period in days (default: 365)
---key-size BITS      RSA key size in bits: 1024, 2048, or 4096 (default: 2048)
+--output-dir DIR              Directory to output certificate files (default: certs)
+--hostname HOSTNAME           Primary hostname/CN for the server certificate (default: localhost)
+--additional-hostnames HOSTS  Additional hostnames or IP addresses to include in Subject 
+                              Alternative Name (SAN). Useful for multi-node setups where the 
+                              same certificate is used on multiple nodes. Can specify multiple.
+--validity-days DAYS          Certificate validity period in days (default: 365)
+--key-size BITS               RSA key size in bits: 1024, 2048, or 4096 (default: 2048)
 ```
 
 ### Usage Examples
@@ -76,7 +85,18 @@ This creates:
 - `certs/server.crt` - Server certificate
 - `certs/server.key` - Server private key
 
-#### Production Setup
+#### Production Setup (Multi-Node)
+```bash
+# For multi-node deployment, include all node IPs/hostnames
+python generate_certs.py \
+  --hostname 192.168.1.10 \
+  --additional-hostnames 192.168.1.11 192.168.1.12 192.168.1.13 \
+  --output-dir /etc/mosaic/certs \
+  --validity-days 730 \
+  --key-size 4096
+```
+
+#### Production Setup (Single Node)
 ```bash
 python generate_certs.py \
   --hostname mosaic-server.example.com \
@@ -138,8 +158,36 @@ If you get permission errors when writing to the output directory:
 #### Certificate validation errors
 If your applications report certificate validation errors:
 - Ensure the CA certificate is trusted by your application
-- Check that the hostname in the certificate matches the hostname used to connect
+- For multi-node setups: Ensure all node IPs/hostnames are included in the certificate SAN
 - Verify certificate expiration dates
+
+### Multi-Node Certificate Setup
+
+For multi-node MOSAIC deployments, you can use the same certificate files on all nodes. This simplifies certificate management while maintaining security through CA signature verification.
+
+**How it works:**
+1. Generate certificates with all node IPs/hostnames included in the Subject Alternative Name (SAN) extension
+2. Copy the same three certificate files (`ca.crt`, `server.crt`, `server.key`) to all nodes
+3. MOSAIC automatically disables strict hostname verification for shared certificates while still verifying the certificate chain (CA signature)
+
+**Example for 3-node network:**
+```bash
+# Generate certificates with all node IPs
+python generate_certs.py \
+  --hostname 192.168.1.10 \
+  --additional-hostnames 192.168.1.11 192.168.1.12
+
+# Copy the same files to all nodes
+scp certs/* user@node1:/home/user/mosaic/certs/
+scp certs/* user@node2:/home/user/mosaic/certs/
+scp certs/* user@node3:/home/user/mosaic/certs/
+```
+
+**Security considerations:**
+- The certificate chain (CA signature) is still verified, providing authentication
+- Hostname verification is disabled to allow shared certificates across nodes
+- All nodes must have the same CA certificate to trust each other
+- Private key (`server.key`) must be kept secure on all nodes
 
 ### SSL Behavior in MOSAIC
 

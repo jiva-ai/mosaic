@@ -29,9 +29,17 @@ class CertificateGenerator:
     def __init__(self, output_dir: str = "certs", hostname: str = "localhost", 
                  validity_days: int = 365, key_size: int = 2048,
                  ca_key_name: Optional[str] = None, ca_crt_name: Optional[str] = None,
-                 server_key_name: Optional[str] = None, server_crt_name: Optional[str] = None):
+                 server_key_name: Optional[str] = None, server_crt_name: Optional[str] = None,
+                 additional_hostnames: Optional[List[str]] = None):
         self.output_dir = Path(output_dir)
         self.hostname = hostname
+        # Collect all hostnames/IPs: primary hostname + additional ones
+        self.all_hostnames = [hostname]
+        if additional_hostnames:
+            self.all_hostnames.extend(additional_hostnames)
+        # Remove duplicates while preserving order
+        seen = set()
+        self.all_hostnames = [x for x in self.all_hostnames if not (x in seen or seen.add(x))]
         self.validity_days = validity_days
         self.key_size = key_size
         
@@ -303,6 +311,7 @@ class CertificateGenerator:
         print("\n=== Attempting to generate certificates with OpenSSL ===")
         
         try:
+            import ipaddress
             # Generate CA private key
             print("Generating CA private key...")
             subprocess.run(
@@ -344,18 +353,48 @@ class CertificateGenerator:
                 capture_output=True
             )
             
-            # Generate server certificate signed by CA
+            # Generate server certificate signed by CA with SAN extension
             print("Generating server certificate signed by CA...")
+            # Create a config file for SAN extension
+            san_config_path = self.output_dir / "san_config.txt"
+            with open(san_config_path, "w") as f:
+                f.write("[req]\n")
+                f.write("distinguished_name = req_distinguished_name\n")
+                f.write("req_extensions = v3_req\n")
+                f.write("[v3_req]\n")
+                f.write("subjectAltName = @alt_names\n")
+                f.write("[alt_names]\n")
+                # Add all hostnames/IPs to SAN
+                for idx, host in enumerate(self.all_hostnames, 1):
+                    # Try to determine if it's an IP or hostname
+                    try:
+                        ipaddress.ip_address(host)
+                        # It's an IP address
+                        f.write(f"IP.{idx} = {host}\n")
+                    except ValueError:
+                        # It's a hostname
+                        f.write(f"DNS.{idx} = {host}\n")
+                # Always add localhost and 127.0.0.1 if not already present
+                if "localhost" not in self.all_hostnames:
+                    f.write(f"DNS.{len(self.all_hostnames) + 1} = localhost\n")
+                if "127.0.0.1" not in self.all_hostnames:
+                    f.write(f"IP.{len(self.all_hostnames) + 2} = 127.0.0.1\n")
+            
             subprocess.run(
                 [
                     "openssl", "x509", "-req", "-days", str(self.validity_days),
                     "-in", str(self.server_csr_path), "-CA", str(self.ca_crt_path),
                     "-CAkey", str(self.ca_key_path), "-CAcreateserial",
+                    "-extensions", "v3_req", "-extfile", str(san_config_path),
                     "-out", str(self.server_crt_path)
                 ],
                 check=True,
                 capture_output=True
             )
+            
+            # Clean up SAN config file
+            if san_config_path.exists():
+                san_config_path.unlink()
             
             # Clean up CSR file
             if self.server_csr_path.exists():
@@ -446,6 +485,26 @@ class CertificateGenerator:
                 x509.NameAttribute(NameOID.COMMON_NAME, self.hostname),
             ])
             
+            # Build SAN list with all hostnames/IPs
+            san_list = []
+            for host in self.all_hostnames:
+                try:
+                    # Try to parse as IP address
+                    ip = ipaddress.ip_address(host)
+                    if isinstance(ip, ipaddress.IPv4Address):
+                        san_list.append(x509.IPAddress(ip))
+                    elif isinstance(ip, ipaddress.IPv6Address):
+                        san_list.append(x509.IPAddress(ip))
+                except ValueError:
+                    # Not an IP, treat as DNS name
+                    san_list.append(x509.DNSName(host))
+            
+            # Always add localhost and 127.0.0.1 if not already present
+            if "localhost" not in self.all_hostnames:
+                san_list.append(x509.DNSName("localhost"))
+            if "127.0.0.1" not in self.all_hostnames:
+                san_list.append(x509.IPAddress(ipaddress.IPv4Address("127.0.0.1")))
+            
             server_cert = x509.CertificateBuilder().subject_name(
                 server_subject
             ).issuer_name(
@@ -459,11 +518,7 @@ class CertificateGenerator:
             ).not_valid_after(
                 datetime.now(timezone.utc) + timedelta(days=self.validity_days)
             ).add_extension(
-                x509.SubjectAlternativeName([
-                    x509.DNSName(self.hostname),
-                    x509.DNSName("localhost"),
-                    x509.IPAddress(ipaddress.IPv4Address("127.0.0.1")),
-                ]),
+                x509.SubjectAlternativeName(san_list),
                 critical=False,
             ).sign(ca_key, hashes.SHA256())
             
@@ -721,7 +776,9 @@ These paths should be configured in your MOSAIC config file:
         
         print("MOSAIC SSL Certificate Generation Utility")
         print("=" * 50)
-        print(f"Hostname: {self.hostname}")
+        print(f"Primary hostname: {self.hostname}")
+        if len(self.all_hostnames) > 1:
+            print(f"All hostnames/IPs in SAN: {', '.join(self.all_hostnames)}")
         print(f"Output directory: {self.output_dir.absolute()}")
         print(f"Validity: {self.validity_days} days")
         print(f"Key size: {self.key_size} bits")
@@ -831,7 +888,15 @@ Examples:
     parser.add_argument(
         "--hostname",
         default="localhost",
-        help="Hostname/CN for the server certificate (default: localhost)"
+        help="Primary hostname/CN for the server certificate (default: localhost)"
+    )
+    parser.add_argument(
+        "--additional-hostnames",
+        nargs="+",
+        default=None,
+        help="Additional hostnames or IP addresses to include in Subject Alternative Name (SAN). "
+             "Useful for multi-node setups where the same certificate is used on multiple nodes. "
+             "Example: --additional-hostnames 192.168.1.10 192.168.1.11 192.168.1.12"
     )
     parser.add_argument(
         "--validity-days",
@@ -882,7 +947,8 @@ Examples:
         ca_key_name=args.ca_key_name,
         ca_crt_name=args.ca_crt_name,
         server_key_name=args.server_key_name,
-        server_crt_name=args.server_crt_name
+        server_crt_name=args.server_crt_name,
+        additional_hostnames=args.additional_hostnames
     )
     
     success = generator.generate(interactive_filenames=not args.no_interactive_filenames)
