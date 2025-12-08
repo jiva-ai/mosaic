@@ -17,7 +17,9 @@ CONTAINER_NAME="mosaic-node"
 CONFIG_FILE="mosaic.config"
 CONFIG_BASENAME=""
 CONFIG_ABS_PATH=""
-FORCE_HOST_NETWORK=false
+FORCE_READ_CONFIG_NETWORK=false
+HEARTBEAT_PORT=5000
+COMMS_PORT=5001
 
 # Parse command-line arguments
 parse_args() {
@@ -27,19 +29,33 @@ parse_args() {
                 CONFIG_FILE="$2"
                 shift 2
                 ;;
-            --host-network)
-                FORCE_HOST_NETWORK=true
+            --bridge-network|--use-config-ports)
+                FORCE_READ_CONFIG_NETWORK=true
                 shift
                 ;;
             --help|-h)
                 echo "Usage: $0 [OPTIONS]"
                 echo ""
                 echo "Options:"
-                echo "  --config PATH      Path to mosaic configuration file"
-                echo "  --host-network     Force host network mode (overrides auto-detection)"
-                echo "  --help, -h         Show this help message"
+                echo "  --config PATH           Path to mosaic configuration file"
+                echo "  --bridge-network         Use bridge network mode with ports from config (default: host network)"
+                echo "  --use-config-ports       Alias for --bridge-network"
+                echo "  --help, -h              Show this help message"
                 echo ""
                 echo "If --config is not provided, looks for mosaic.config in current directory"
+                echo ""
+                echo "Network Modes:"
+                echo "  Host network (default):"
+                echo "    - Container shares the host's network stack directly"
+                echo "    - No port mapping needed - all ports are directly accessible"
+                echo "    - Best performance, recommended for Linux servers"
+                echo "    - Works on native Linux; may not work on Docker Desktop/Mac/Windows"
+                echo ""
+                echo "  Bridge network (--bridge-network):"
+                echo "    - Container runs in isolated network with port forwarding"
+                echo "    - Requires explicit port mappings (heartbeat_port and comms_port from config)"
+                echo "    - More portable, works on all Docker platforms"
+                echo "    - Slightly higher overhead due to network translation"
                 exit 0
                 ;;
             *)
@@ -54,22 +70,6 @@ parse_args() {
     CONFIG_FILE=$(eval echo "$CONFIG_FILE")
 }
 
-# Detect if running on Linux (for host network mode)
-detect_network_mode() {
-    if [[ "$OSTYPE" == "linux-gnu"* ]]; then
-        # Check if Docker Desktop (WSL2) or native Linux
-        if grep -q microsoft /proc/version 2>/dev/null; then
-            # WSL2 - use bridge mode
-            echo "bridge"
-        else
-            # Native Linux - use host mode
-            echo "host"
-        fi
-    else
-        # Mac, Windows, etc. - use bridge mode
-        echo "bridge"
-    fi
-}
 
 # Parse config file and extract paths (pure bash, no dependencies)
 parse_config() {
@@ -87,6 +87,15 @@ parse_config() {
         # Pattern: "key": "value" or "key":"value"
         grep -o "\"$key\"[[:space:]]*:[[:space:]]*\"[^\"]*\"" "$file" 2>/dev/null | \
         sed -n 's/.*:[[:space:]]*"\([^"]*\)".*/\1/p' | head -1
+    }
+    
+    # Extract JSON numeric value for a given key (handles unquoted numbers)
+    extract_json_numeric() {
+        local key="$1"
+        local file="$2"
+        # Pattern: "key": number or "key":number (handles whitespace)
+        grep -o "\"$key\"[[:space:]]*:[[:space:]]*[0-9]\+" "$file" 2>/dev/null | \
+        sed -n 's/.*:[[:space:]]*\([0-9]\+\).*/\1/p' | head -1
     }
     
     # Expand path (~ and environment variables) and make absolute
@@ -200,15 +209,32 @@ parse_config() {
     done
     echo "DIRS_END"
     
-    # Output certificate file paths
+    # Output certificate file paths (expanded and original)
     echo "CERTS_START"
     for key in server_crt server_key ca_crt; do
         eval "expanded=\$cert_${key}"
         if [ -n "$expanded" ]; then
             echo "${key}=${expanded}"
+            # Also output original path from config for comparison
+            original=$(extract_json_value "$key" "$CONFIG_FILE")
+            if [ -n "$original" ]; then
+                echo "${key}_original=${original}"
+            fi
         fi
     done
     echo "CERTS_END"
+    
+    # Extract port numbers
+    echo "PORTS_START"
+    heartbeat_port=$(extract_json_numeric "heartbeat_port" "$CONFIG_FILE")
+    comms_port=$(extract_json_numeric "comms_port" "$CONFIG_FILE")
+    if [ -n "$heartbeat_port" ]; then
+        echo "heartbeat_port=${heartbeat_port}"
+    fi
+    if [ -n "$comms_port" ]; then
+        echo "comms_port=${comms_port}"
+    fi
+    echo "PORTS_END"
 }
 
 # Check if config file exists and parse it
@@ -271,10 +297,6 @@ check_config() {
             echo "  -v /path/to/benchmark_data:/app/benchmark_data \\"
             echo "  -v /path/to/certs:/path/to/certs:ro \\"
             echo "  -e MOSAIC_CONFIG=/app/mosaic.config \\"
-            echo "  -p 5000:5000/udp \\"
-            echo "  -p 5001:5001/tcp \\"
-            echo "  -p 49152-65535:49152-65535/tcp \\"
-            echo "  -p 49152-65535:49152-65535/udp \\"
             echo "  mosaic-python:latest"
             echo ""
             echo -e "${YELLOW}Replace the following placeholders:${NC}"
@@ -293,8 +315,10 @@ check_config() {
         # Extract directory and cert mappings using associative arrays
         in_dirs=false
         in_certs=false
+        in_ports=false
         declare -gA CONFIG_DIRS
         declare -gA CONFIG_CERTS
+        declare -gA CONFIG_CERTS_ORIGINAL  # Store original paths from config file
         
         while IFS= read -r line; do
             if [ "$line" = "DIRS_START" ]; then
@@ -309,6 +333,12 @@ check_config() {
             elif [ "$line" = "CERTS_END" ]; then
                 in_certs=false
                 continue
+            elif [ "$line" = "PORTS_START" ]; then
+                in_ports=true
+                continue
+            elif [ "$line" = "PORTS_END" ]; then
+                in_ports=false
+                continue
             fi
             
             if [ "$in_dirs" = true ] && [[ "$line" == *"="* ]]; then
@@ -318,7 +348,21 @@ check_config() {
             elif [ "$in_certs" = true ] && [[ "$line" == *"="* ]]; then
                 key="${line%%=*}"
                 value="${line#*=}"
-                CONFIG_CERTS["$key"]="$value"
+                if [[ "$key" == *_original ]]; then
+                    # Store original path (remove _original suffix for key)
+                    orig_key="${key%_original}"
+                    CONFIG_CERTS_ORIGINAL["$orig_key"]="$value"
+                else
+                    CONFIG_CERTS["$key"]="$value"
+                fi
+            elif [ "$in_ports" = true ] && [[ "$line" == *"="* ]]; then
+                key="${line%%=*}"
+                value="${line#*=}"
+                if [ "$key" = "heartbeat_port" ]; then
+                    HEARTBEAT_PORT="$value"
+                elif [ "$key" = "comms_port" ]; then
+                    COMMS_PORT="$value"
+                fi
             fi
         done <<< "$CONFIG_OUTPUT"
     fi
@@ -347,8 +391,6 @@ create_directories() {
 
 # Build Docker run command as array
 build_docker_command() {
-    NETWORK_MODE=$1
-    
     # Use array to build command (avoids eval issues with special characters)
     DOCKER_ARGS=()
     
@@ -359,23 +401,15 @@ build_docker_command() {
     DOCKER_ARGS+=("--name" "$CONTAINER_NAME")
     DOCKER_ARGS+=("--restart" "unless-stopped")
     
-    # Network mode
-    if [ "$NETWORK_MODE" == "host" ]; then
-        DOCKER_ARGS+=("--network" "host")
-        if [ "$FORCE_HOST_NETWORK" = true ]; then
-            echo -e "${GREEN}Using host network mode (forced)${NC}"
-        else
-            echo -e "${GREEN}Using host network mode (auto-detected)${NC}"
-        fi
+    if [ "$FORCE_READ_CONFIG_NETWORK" = true ]; then
+        DOCKER_ARGS+=("-p" "${HEARTBEAT_PORT}:${HEARTBEAT_PORT}/udp") 
+        DOCKER_ARGS+=("-p" "${COMMS_PORT}:${COMMS_PORT}/tcp")
+        echo -e "${GREEN}Using bridge network mode (ports: ${HEARTBEAT_PORT}/udp, ${COMMS_PORT}/tcp)${NC}"
     else
-        # Bridge mode with port mappings
-        DOCKER_ARGS+=("-p" "5000:5000/udp")
-        DOCKER_ARGS+=("-p" "5001:5001/tcp")
-        DOCKER_ARGS+=("-p" "49152-65535:49152-65535/tcp")
-        DOCKER_ARGS+=("-p" "49152-65535:49152-65535/udp")
-        echo -e "${GREEN}Using bridge network mode with port mapping${NC}"
+        DOCKER_ARGS+=("--network" "host")
+        echo -e "${GREEN}Using host network mode (default)${NC}"
     fi
-    
+
     # Config file mount
     if [ -n "$CONFIG_MOUNT" ]; then
         # CONFIG_MOUNT is like "-v /path:/path:ro", split it properly
@@ -431,8 +465,27 @@ build_docker_command() {
         declare -A cert_dirs_seen
         for key in "${!CONFIG_CERTS[@]}"; do
             cert_file="${CONFIG_CERTS[$key]}"
+            original_path="${CONFIG_CERTS_ORIGINAL[$key]}"
+            
             if [ -n "$cert_file" ]; then
                 cert_dir=$(dirname "$cert_file")
+                
+                # Check for path mismatch between config and mount location
+                if [ -n "$original_path" ]; then
+                    original_dir=$(dirname "$original_path")
+                    if [ "$cert_dir" != "$original_dir" ]; then
+                        echo -e "  ${YELLOW}⚠${NC} ${RED}WARNING:${NC} Certificate path mismatch detected for $key"
+                        echo -e "     Config file path: ${original_path}"
+                        echo -e "     Host file path:   ${cert_file}"
+                        echo -e "     ${YELLOW}The container will mount: ${cert_dir} -> ${cert_dir}${NC}"
+                        echo -e "     ${YELLOW}But the app will look for: ${original_path}${NC}"
+                        echo -e "     ${YELLOW}This will cause SSL certificate errors!${NC}"
+                        echo -e "     ${YELLOW}Solution: Update your config file to use the host path:${NC}"
+                        echo -e "     ${YELLOW}  \"$key\": \"${cert_file}\"${NC}"
+                        echo ""
+                    fi
+                fi
+                
                 # Only mount if we haven't seen this directory
                 if [ -z "${cert_dirs_seen[$cert_dir]}" ]; then
                     DOCKER_ARGS+=("-v" "$cert_dir:$cert_dir:ro")
@@ -470,7 +523,7 @@ main() {
     # Check if container already exists
     if docker ps -a --format '{{.Names}}' | grep -q "^${CONTAINER_NAME}$"; then
         echo -e "${YELLOW}Container $CONTAINER_NAME already exists${NC}"
-        read -p "Remove existing container and start new one? (y/n) " -n 1 -r
+        read -p "Remove existing container and start new one ('y' to remove, 'n' to attach to existing container)? (y/n) " -n 1 -r
         echo
         if [[ $REPLY =~ ^[Yy]$ ]]; then
             echo -e "${GREEN}Removing existing container...${NC}"
@@ -496,16 +549,8 @@ main() {
     # Create directories
     create_directories
     
-    # Detect network mode (or use forced mode)
-    if [ "$FORCE_HOST_NETWORK" = true ]; then
-        NETWORK_MODE="host"
-        echo -e "${GREEN}Forcing host network mode (--host-network specified)${NC}"
-    else
-        NETWORK_MODE=$(detect_network_mode)
-    fi
-    
     # Build command array
-    build_docker_command $NETWORK_MODE
+    build_docker_command
     
     echo ""
     echo -e "${GREEN}Starting Mosaic container...${NC}"

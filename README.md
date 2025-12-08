@@ -250,6 +250,18 @@ chmod +x run_mosaic.sh  # Make it executable
 ./run_mosaic.sh --config mosaic-config.json
 ```
 
+**Network Modes:**
+
+By default, `run_mosaic.sh` uses **host network mode**, which is recommended for Linux servers. The script automatically extracts `heartbeat_port` and `comms_port` from your configuration file.
+
+- **Host network (default)**: Container shares the host's network stack directly. Best performance, recommended for Linux servers. Works on native Linux; may not work on Docker Desktop/Mac/Windows.
+- **Bridge network**: Use `--bridge-network` flag to use bridge mode with port mappings. More portable, works on all Docker platforms. Ports are automatically extracted from your config file (`heartbeat_port` and `comms_port`).
+
+```bash
+# Use bridge network mode (for Docker Desktop, Mac, or Windows)
+./run_mosaic.sh --config mosaic-config.json --bridge-network
+```
+
 For more detailed information on running MOSAIC across multiple machines, see [MULTI-MACHINE-DOCKERS.md](MULTI-MACHINE-DOCKERS.md) and the [mosaic-config README](CONFIG.md).
 
 ### Worked Example: 3-Node Network
