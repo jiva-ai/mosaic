@@ -141,6 +141,32 @@ If your applications report certificate validation errors:
 - Check that the hostname in the certificate matches the hostname used to connect
 - Verify certificate expiration dates
 
+### SSL Behavior in MOSAIC
+
+⚠️ **Critical Security Behavior**: 
+
+MOSAIC's communication system (beacon) has a **graceful degradation** behavior for SSL certificates:
+
+- **If SSL certificate validation fails** (files missing, invalid, or cannot be loaded), MOSAIC will:
+  - Log warning messages about the SSL validation failure
+  - **Still create sockets and start the system**
+  - **Run in unencrypted mode** (no SSL/TLS protection)
+  - Continue normal operation without encryption
+
+This behavior allows the system to start even if certificates are misconfigured, but **this means your communication will be unencrypted**. 
+
+**What to check:**
+- Verify certificate file paths in your configuration are correct
+- Ensure certificate files exist and are readable
+- Check that certificate files are valid (not corrupted)
+- Review MOSAIC startup logs for SSL validation warnings
+- In production, always verify SSL is enabled by checking logs for "SSL certificates validated successfully, SSL enabled"
+
+**Why this matters:**
+- Unencrypted communication exposes all data transmitted between nodes
+- Model weights, training data, and inference results may be transmitted in plain text
+- Always ensure SSL certificates are properly configured before deploying to production
+
 ### Security Notes
 
 ⚠️ **Important Security Considerations:**
@@ -164,6 +190,7 @@ If your applications report certificate validation errors:
    - For production environments, consider using certificates from a trusted CA
    - Self-signed certificates are suitable for development and internal networks
    - Ensure proper certificate chain validation in your applications
+   - **Always verify SSL is enabled** by checking startup logs for successful SSL validation messages
 
 ### File Permissions (Linux/macOS)
 

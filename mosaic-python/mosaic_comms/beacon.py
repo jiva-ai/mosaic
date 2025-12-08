@@ -119,6 +119,9 @@ class Beacon:
         # Track chunks being received (chunk_id -> list of chunks)
         self._chunk_storage: Dict[str, Dict[str, Any]] = {}
         
+        # Validate SSL certificates and set flag
+        self._ssl_enabled = self._validate_ssl_certificates()
+        
         # Register default command handlers
         self.register("ping", self._handle_ping_test)
         self.register("stats", self._handle_stats)
@@ -199,6 +202,76 @@ class Beacon:
         """
         self._command_handlers[command] = handler
         logger.debug(f"Registered command handler for '{command}'")
+
+    def _validate_ssl_certificates(self) -> bool:
+        """
+        Validate SSL certificate files from config.
+        
+        Checks if certificate files exist and can be loaded into an SSL context.
+        Logs warnings if there are issues.
+        
+        Returns:
+            True if SSL certificates are valid and can be used, False otherwise
+        """
+        # If no certificates are configured, SSL is disabled
+        if not self.config.server_crt and not self.config.server_key:
+            logger.debug("No SSL certificates configured, SSL disabled")
+            return False
+        
+        # Check if certificate files exist
+        cert_errors = []
+        if self.config.server_crt:
+            cert_path = Path(self.config.server_crt)
+            if not cert_path.exists():
+                cert_errors.append(f"Server certificate not found: {self.config.server_crt}")
+            elif not cert_path.is_file():
+                cert_errors.append(f"Server certificate path is not a file: {self.config.server_crt}")
+        
+        if self.config.server_key:
+            key_path = Path(self.config.server_key)
+            if not key_path.exists():
+                cert_errors.append(f"Server key not found: {self.config.server_key}")
+            elif not key_path.is_file():
+                cert_errors.append(f"Server key path is not a file: {self.config.server_key}")
+        
+        if self.config.ca_crt:
+            ca_path = Path(self.config.ca_crt)
+            if not ca_path.exists():
+                cert_errors.append(f"CA certificate not found: {self.config.ca_crt}")
+            elif not ca_path.is_file():
+                cert_errors.append(f"CA certificate path is not a file: {self.config.ca_crt}")
+        
+        # Log warnings for missing files
+        if cert_errors:
+            for error in cert_errors:
+                logger.warning(f"SSL certificate validation failed: {error}")
+            logger.warning("SSL will be disabled - sockets will be created without SSL")
+            return False
+        
+        # Try to create SSL context to validate certificates are valid
+        try:
+            ssl_context = ssl.create_default_context(ssl.Purpose.CLIENT_AUTH)
+            if self.config.server_crt and self.config.server_key:
+                ssl_context.load_cert_chain(
+                    certfile=self.config.server_crt,
+                    keyfile=self.config.server_key
+                )
+            if self.config.ca_crt:
+                ssl_context.load_verify_locations(cafile=self.config.ca_crt)
+            logger.info("SSL certificates validated successfully, SSL enabled")
+            return True
+        except ssl.SSLError as e:
+            logger.warning(f"SSL certificate validation failed: SSL error - {e}")
+            logger.warning("SSL will be disabled - sockets will be created without SSL")
+            return False
+        except FileNotFoundError as e:
+            logger.warning(f"SSL certificate validation failed: File not found - {e}")
+            logger.warning("SSL will be disabled - sockets will be created without SSL")
+            return False
+        except Exception as e:
+            logger.warning(f"SSL certificate validation failed: {e}")
+            logger.warning("SSL will be disabled - sockets will be created without SSL")
+            return False
 
     def start(self) -> None:
         """
@@ -306,9 +379,9 @@ class Beacon:
 
             logger.info(f"UDP heartbeat listener started on {self.config.host}:{self.config.heartbeat_port}")
 
-            # Set up SSL context if certificates are provided
+            # Set up SSL context if SSL is enabled
             ssl_context = None
-            if self.config.server_crt and self.config.server_key:
+            if self._ssl_enabled:
                 try:
                     ssl_context = ssl.create_default_context(ssl.Purpose.CLIENT_AUTH)
                     ssl_context.load_cert_chain(
@@ -372,9 +445,9 @@ class Beacon:
 
             logger.info(f"TCP comms listener started on {self.config.host}:{self.config.comms_port}")
 
-            # Set up SSL context if certificates are provided
+            # Set up SSL context if SSL is enabled
             ssl_context = None
-            if self.config.server_crt and self.config.server_key:
+            if self._ssl_enabled:
                 try:
                     ssl_context = ssl.create_default_context(ssl.Purpose.CLIENT_AUTH)
                     ssl_context.load_cert_chain(
@@ -856,9 +929,9 @@ class Beacon:
             sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
             sock.settimeout(timeout)
 
-            # Set up SSL context if certificates are provided
+            # Set up SSL context if SSL is enabled
             ssl_context = None
-            if self.config.server_crt and self.config.server_key:
+            if self._ssl_enabled:
                 try:
                     ssl_context = ssl.create_default_context(ssl.Purpose.SERVER_AUTH)
                     ssl_context.load_cert_chain(
@@ -1905,23 +1978,28 @@ class Beacon:
 
         status = self._send_heartbeat_statuses[key]
 
-        # Validate certificate files exist if provided
-        cert_error = False
-        if server_crt or server_key or ca_crt:
-            if server_crt and not Path(server_crt).exists():
-                logger.error(f"Server certificate not found: {server_crt}")
-                cert_error = True
-            if server_key and not Path(server_key).exists():
-                logger.error(f"Server key not found: {server_key}")
-                cert_error = True
-            if ca_crt and not Path(ca_crt).exists():
-                logger.error(f"CA certificate not found: {ca_crt}")
-                cert_error = True
+        # If SSL is not enabled, skip SSL validation and send without SSL
+        if not self._ssl_enabled:
+            # SSL disabled, proceed without SSL
+            pass
+        else:
+            # SSL is enabled, validate certificate files exist
+            cert_error = False
+            if server_crt or server_key or ca_crt:
+                if server_crt and not Path(server_crt).exists():
+                    logger.error(f"Server certificate not found: {server_crt}")
+                    cert_error = True
+                if server_key and not Path(server_key).exists():
+                    logger.error(f"Server key not found: {server_key}")
+                    cert_error = True
+                if ca_crt and not Path(ca_crt).exists():
+                    logger.error(f"CA certificate not found: {ca_crt}")
+                    cert_error = True
 
-        if cert_error:
-            status.connection_status = "cert_error"
-            status.last_time_sent = current_time_ms
-            return
+            if cert_error:
+                status.connection_status = "cert_error"
+                status.last_time_sent = current_time_ms
+                return
 
         # Create UDP socket
         sock = None
@@ -1949,9 +2027,9 @@ class Beacon:
             # This validates certificates and sends UDP
             # For full DTLS encryption, consider using a library like python-dtls
             try:
-                # Validate SSL context can be created with certificates
+                # If SSL is enabled, validate SSL context can be created with certificates
                 # This validates certificate files are readable and properly formatted
-                if server_crt or server_key or ca_crt:
+                if self._ssl_enabled and (server_crt or server_key or ca_crt):
                     try:
                         context = ssl.create_default_context(
                             ssl.Purpose.SERVER_AUTH, cafile=ca_crt if ca_crt else None

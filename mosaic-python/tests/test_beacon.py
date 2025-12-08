@@ -555,6 +555,112 @@ class TestBeaconSSLErrors:
             assert status is not None
             assert status.connection_status == "cert_error"
 
+    def test_ssl_files_not_existing_sockets_work_without_ssl(self, temp_state_dir):
+        """Test that when SSL files don't exist, sockets are created without SSL and commands work."""
+        # Create config with non-existent SSL certificate paths
+        config_with_missing_ssl = create_test_config_with_state(
+            state_dir=temp_state_dir,
+            host="127.0.0.1",
+            heartbeat_port=5010,
+            comms_port=5011,
+            heartbeat_frequency=2,
+            heartbeat_tolerance=5,
+            heartbeat_wait_timeout=2,
+            server_crt="/nonexistent/server.crt",  # Non-existent file
+            server_key="/nonexistent/server.key",  # Non-existent file
+            ca_crt="/nonexistent/ca.crt",  # Non-existent file
+            benchmark_data_location="",
+        )
+        
+        config_receiver = create_test_config_with_state(
+            state_dir=temp_state_dir,
+            host="127.0.0.1",
+            heartbeat_port=5012,
+            comms_port=5013,
+            heartbeat_frequency=2,
+            heartbeat_tolerance=5,
+            heartbeat_wait_timeout=2,
+            server_crt="",  # No SSL
+            server_key="",
+            ca_crt="",
+            benchmark_data_location="",
+        )
+        
+        with patch("mosaic_comms.beacon.StatsCollector") as mock_stats_class:
+            mock_stats = MagicMock()
+            mock_stats.get_last_stats_json.return_value = "{}"
+            mock_stats_class.return_value = mock_stats
+            
+            # Create beacons - SSL validation should fail and disable SSL
+            beacon1 = Beacon(config_with_missing_ssl)
+            beacon2 = Beacon(config_receiver)
+            
+            # Verify SSL is disabled
+            assert not beacon1._ssl_enabled, "SSL should be disabled when certificate files don't exist"
+            assert not beacon2._ssl_enabled, "SSL should be disabled when no certificates configured"
+            
+            try:
+                # Start both beacons
+                beacon1.start()
+                beacon2.start()
+                
+                # Give them time to start listening
+                time.sleep(0.5)
+                
+                # Test 1: Verify heartbeat can be sent/received (UDP socket works)
+                payload = {
+                    "host": config_receiver.host,
+                    "port": config_receiver.heartbeat_port,
+                    "comms_port": config_receiver.comms_port,
+                    "stats": {},
+                }
+                beacon1.send_heartbeat(
+                    host=config_receiver.host,
+                    port=config_receiver.heartbeat_port,
+                    heartbeat_wait_timeout=config_with_missing_ssl.heartbeat_wait_timeout,
+                    server_crt=config_with_missing_ssl.server_crt,
+                    server_key=config_with_missing_ssl.server_key,
+                    ca_crt=config_with_missing_ssl.ca_crt,
+                    json_payload=payload,
+                )
+                
+                # Wait a bit for heartbeat to be received
+                time.sleep(0.5)
+                
+                # Verify heartbeat was received (connection_status should be "ok" since SSL is disabled)
+                status = beacon1.get_send_heartbeat_status(
+                    config_receiver.host, config_receiver.heartbeat_port
+                )
+                assert status is not None
+                # Status should be "ok" since we're not using SSL
+                assert status.connection_status == "ok", f"Expected 'ok', got '{status.connection_status}'"
+                
+                # Test 2: Verify send_command works (TCP socket works)
+                response = beacon1.send_command(
+                    host=config_receiver.host,
+                    port=config_receiver.comms_port,
+                    command="ping",
+                    payload={"test": "data"},
+                )
+                
+                assert response is not None, "send_command should return a response"
+                assert response == {"test": "data"}, "Response should echo the payload"
+                
+                # Test 3: Send command again to ensure socket is still working
+                response2 = beacon1.send_command(
+                    host=config_receiver.host,
+                    port=config_receiver.comms_port,
+                    command="ping",
+                    payload={"test2": "data2"},
+                )
+                
+                assert response2 is not None, "Second send_command should also return a response"
+                assert response2 == {"test2": "data2"}, "Second response should echo the payload"
+                
+            finally:
+                beacon1.stop()
+                beacon2.stop()
+
 
 class TestBeaconCommandRegistration:
     """Test command registration functionality."""

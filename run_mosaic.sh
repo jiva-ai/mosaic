@@ -17,6 +17,7 @@ CONTAINER_NAME="mosaic-node"
 CONFIG_FILE="mosaic.config"
 CONFIG_BASENAME=""
 CONFIG_ABS_PATH=""
+FORCE_HOST_NETWORK=false
 
 # Parse command-line arguments
 parse_args() {
@@ -26,12 +27,17 @@ parse_args() {
                 CONFIG_FILE="$2"
                 shift 2
                 ;;
+            --host-network)
+                FORCE_HOST_NETWORK=true
+                shift
+                ;;
             --help|-h)
                 echo "Usage: $0 [OPTIONS]"
                 echo ""
                 echo "Options:"
-                echo "  --config PATH    Path to mosaic configuration file"
-                echo "  --help, -h       Show this help message"
+                echo "  --config PATH      Path to mosaic configuration file"
+                echo "  --host-network     Force host network mode (overrides auto-detection)"
+                echo "  --help, -h         Show this help message"
                 echo ""
                 echo "If --config is not provided, looks for mosaic.config in current directory"
                 exit 0
@@ -349,14 +355,18 @@ build_docker_command() {
     # Base command parts
     DOCKER_ARGS+=("docker")
     DOCKER_ARGS+=("run")
-    DOCKER_ARGS+=("-ait")
+    DOCKER_ARGS+=("-it")
     DOCKER_ARGS+=("--name" "$CONTAINER_NAME")
     DOCKER_ARGS+=("--restart" "unless-stopped")
     
     # Network mode
     if [ "$NETWORK_MODE" == "host" ]; then
         DOCKER_ARGS+=("--network" "host")
-        echo -e "${GREEN}Using host network mode (Linux)${NC}"
+        if [ "$FORCE_HOST_NETWORK" = true ]; then
+            echo -e "${GREEN}Using host network mode (forced)${NC}"
+        else
+            echo -e "${GREEN}Using host network mode (auto-detected)${NC}"
+        fi
     else
         # Bridge mode with port mappings
         DOCKER_ARGS+=("-p" "5000:5000/udp")
@@ -486,8 +496,13 @@ main() {
     # Create directories
     create_directories
     
-    # Detect network mode
-    NETWORK_MODE=$(detect_network_mode)
+    # Detect network mode (or use forced mode)
+    if [ "$FORCE_HOST_NETWORK" = true ]; then
+        NETWORK_MODE="host"
+        echo -e "${GREEN}Forcing host network mode (--host-network specified)${NC}"
+    else
+        NETWORK_MODE=$(detect_network_mode)
+    fi
     
     # Build command array
     build_docker_command $NETWORK_MODE

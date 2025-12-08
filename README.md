@@ -127,6 +127,8 @@ Before running MOSAIC on any machine, you need to set up SSL certificates for se
 
 > **📖 For detailed SSL setup information**, see [SECURITY.md](SECURITY.md).
 
+> **⚠️ Important Security Note**: If SSL certificate files are missing, invalid, or cannot be loaded, MOSAIC will **still create sockets and run**, but communication will be **unencrypted**. The system logs warnings when SSL validation fails, but it does not prevent the system from starting. Always verify that your SSL certificates are properly configured and accessible before deploying to production. See [SECURITY.md](SECURITY.md) for details on this behavior.
+
 **Download the certificate generation scripts:**
 
 You can find the certificate generation scripts in the [MOSAIC repository](https://github.com/jiva-ai/mosaic) under the `mosaic-security` directory, or download them directly:
