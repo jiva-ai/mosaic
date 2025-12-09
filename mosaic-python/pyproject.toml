@@ -43,3 +43,13 @@ target-version = ['py311']
 line-length = 100
 target-version = "py311"
 
+[tool.pytest.ini_options]
+filterwarnings = [
+    # Suppress torch_geometric deprecation warning (third-party library)
+    "ignore::DeprecationWarning:torch_geometric",
+    # Suppress torch.onnx.export warnings about dynamic_axes with dynamo=True
+    # The current code works fine with dynamic_axes, and switching to dynamic_shapes
+    # would require more extensive testing
+    "ignore::UserWarning:mosaic_model_runtime.predefined_models",
+]
+

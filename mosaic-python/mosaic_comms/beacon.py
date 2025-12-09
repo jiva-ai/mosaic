@@ -23,7 +23,6 @@ from mosaic_config.state_utils import (
 from mosaic_planner.planner import (
     chunk_data,
     deserialize_plan_with_data,
-    get_directory_size,
     prepare_file_data_for_transmission,
     save_chunk_to_disk,
     serialize_plan_with_data,
