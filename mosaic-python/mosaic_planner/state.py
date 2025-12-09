@@ -154,6 +154,7 @@ class Model:
     binary_rep: Optional[bytes] = None  # ONNX model loaded from onnx_location
     file_name: Optional[str] = None  # File name of the model (automatically sanitized)
     trained: bool = False  # Whether the model has been trained
+    id: str = field(default_factory=lambda: str(uuid.uuid4()))  # Unique identifier
     
     def __post_init__(self):
         """Sanitize file_name after initialization if it's set."""
@@ -202,7 +203,7 @@ class Plan:
 
     stats_data: List[Dict[str, Any]]  # Result of beacon.collect_stats()
     distribution_plan: List[Dict[str, Any]]  # Result of calculate_data_distribution call
-    model: Model
+    model: Model # for convenience, the model is included in the plan and is set when the plan is created
     data_segmentation_plan: Optional[List[Dict[str, Any]]] = None  # Plan for data sharding across machines
     id: str = field(default_factory=lambda: str(uuid.uuid4()))  # Unique identifier
 
@@ -217,7 +218,7 @@ class Session:
     time_started: int = field(init=False)  # Millis since epoch
     time_ended: int = -1  # Millis since epoch, -1 means not finished
     status: SessionStatus = SessionStatus.IDLE  # Session status
-    id: str = field(init=False)  # Unique identifier
+    id: str = field(default_factory=lambda: str(uuid.uuid4()))  # Unique identifier
 
     def __init__(
         self,
@@ -247,7 +248,8 @@ class Session:
         self.time_started = time_started if time_started is not None else int(time.time() * 1000)
         self.time_ended = time_ended
         self.status = status
-        self.id = id if id is not None else str(uuid.uuid4())
+        if id is not None:
+            self.id = id
 
 
 @dataclass
