@@ -123,13 +123,33 @@ docker load -i mosaic-python_latest.tar
 
 > **⚠️ Note**: The Docker image is large (several GB) because it includes all dependencies such as PyTorch and related ML libraries. The initial download may take some time depending on your internet connection.
 
-### Setting Up SSL Certificates
+## Ideal Setup
+
+For the best organization, set up your MOSAIC directory structure as follows:
+
+```
+$ ls -la
+
+benchmarks/          # Benchmark data storage
+data/                # Training and inference data
+models/              # ONNX model files
+plans/               # Distribution plans
+state/               # Node state files
+mosaic-config.json   # Configuration file (passed to run_mosaic.sh)
+run_mosaic.sh        # Helper script to run the Docker container
+```
+
+Running `run_mosaic.sh` as decribed in this section creates this structure by default if it doesn't exist (or as defined in the config file).
+
+This structure keeps all MOSAIC-related files organized and makes it easy to manage your deployment.
+
+## Setting Up SSL Certificates
 
 Before running MOSAIC on any machine, you need to set up SSL certificates for secure communication between nodes. Python 3.11 or higher is required for certificate generation.
 
 > **📖 For detailed SSL setup information**, see [SECURITY.md](SECURITY.md).
 
-> **⚠️ Important Security Note**: If SSL certificate files are missing, invalid, or cannot be loaded, MOSAIC will **still create sockets and run**, but communication will be **unencrypted**. The system logs warnings when SSL validation fails, but it does not prevent the system from starting. Always verify that your SSL certificates are properly configured and accessible before deploying to production. See [SECURITY.md](SECURITY.md) for details on this behavior.
+> **⚠️ Important Security Note**: If SSL certificate files are missing, invalid, or cannot be loaded, MOSAIC will **still create sockets and run**, but communication will be **unencrypted**. The system logs warnings when SSL validation fails, but it does not prevent the system from starting. Always verify that your SSL certificates are properly configured and accessible before deploying to production. See [SECURITY.md](SECURITY.md) for details on this behavior. **This is therefore an optional step, which can be skipped if you just want to do a quick test.**
 
 **Download the certificate generation scripts:**
 
@@ -200,25 +220,8 @@ scp certs/* user@node3:/home/user/mosaic/certs/
 
 For more detailed certificate generation options, troubleshooting, and security best practices, see [SECURITY.md](SECURITY.md).
 
-### Ideal Setup
 
-For the best organization, set up your MOSAIC directory structure as follows:
-
-```
-$ ls -la
-
-benchmarks/          # Benchmark data storage
-data/                # Training and inference data
-models/              # ONNX model files
-plans/               # Distribution plans
-state/               # Node state files
-mosaic-config.json   # Configuration file (passed to run_mosaic.sh)
-run_mosaic.sh        # Helper script to run the Docker container
-```
-
-This structure keeps all MOSAIC-related files organized and makes it easy to manage your deployment.
-
-### Configuration
+## Configuration
 
 Create a `mosaic-config.json` file (or `mosaic.config`) with your node's configuration. Here's an example:
 
@@ -290,7 +293,7 @@ By default, `run_mosaic.sh` uses **host network mode**, which is recommended for
 
 For more detailed information on running MOSAIC across multiple machines, see [MULTI-MACHINE-DOCKERS.md](MULTI-MACHINE-DOCKERS.md) and the [mosaic-config README](CONFIG.md).
 
-### Worked Example: 3-Node Network
+# Worked Example: 3-Node Network
 
 This example demonstrates setting up a MOSAIC network with 3 machines, where Node 1 acts as the controller and Nodes 2 and 3 heartbeat to it.
 
