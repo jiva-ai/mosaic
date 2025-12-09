@@ -33,11 +33,16 @@ parse_args() {
                 FORCE_READ_CONFIG_NETWORK=true
                 shift
                 ;;
+            --name)
+                CONTAINER_NAME="$2"
+                shift 2
+                ;;
             --help|-h)
                 echo "Usage: $0 [OPTIONS]"
                 echo ""
                 echo "Options:"
                 echo "  --config PATH           Path to mosaic configuration file"
+                echo "  --name NAME             Container name (default: mosaic-node)"
                 echo "  --bridge-network         Use bridge network mode with ports from config (default: host network)"
                 echo "  --use-config-ports       Alias for --bridge-network"
                 echo "  --help, -h              Show this help message"
