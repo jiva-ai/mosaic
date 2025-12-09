@@ -437,6 +437,7 @@ class Beacon:
         server_sock = None
         try:
             # Create TCP socket
+            logger.info(f"Attempting to bind to {self.config.host}:{self.config.comms_port}")
             server_sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
             server_sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
             server_sock.bind((self.config.host, self.config.comms_port))

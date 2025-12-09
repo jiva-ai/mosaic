@@ -1,5 +1,6 @@
 """Unit tests for mosaic.repl_commands module."""
 
+import time
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -12,6 +13,7 @@ from mosaic.repl_commands import (
     execute_shb,
     process_command,
 )
+from tests.conftest import create_test_config_with_state
 
 
 class TestExecuteShb:
@@ -32,7 +34,7 @@ class TestExecuteShb:
         def output_fn(text: str) -> None:
             output_lines.append(text)
 
-        with patch("mosaic.repl_commands._beacon", mock_beacon):
+        with patch("mosaic.mosaic._beacon", mock_beacon):
             execute_shb(output_fn)
 
         assert len(output_lines) > 0
@@ -45,7 +47,7 @@ class TestExecuteShb:
         def output_fn(text: str) -> None:
             output_lines.append(text)
 
-        with patch("mosaic.repl_commands._beacon", None):
+        with patch("mosaic.mosaic._beacon", None):
             execute_shb(output_fn)
 
         assert any("Error" in line or "not initialized" in line for line in output_lines)
@@ -71,7 +73,7 @@ class TestExecuteRhb:
         def output_fn(text: str) -> None:
             output_lines.append(text)
 
-        with patch("mosaic.repl_commands._beacon", mock_beacon):
+        with patch("mosaic.mosaic._beacon", mock_beacon):
             execute_rhb(output_fn)
 
         assert len(output_lines) > 0
@@ -83,7 +85,7 @@ class TestExecuteRhb:
         def output_fn(text: str) -> None:
             output_lines.append(text)
 
-        with patch("mosaic.repl_commands._beacon", None):
+        with patch("mosaic.mosaic._beacon", None):
             execute_rhb(output_fn)
 
         assert any("Error" in line or "not initialized" in line for line in output_lines)
@@ -103,7 +105,7 @@ class TestExecuteHb:
         def output_fn(text: str) -> None:
             output_lines.append(text)
 
-        with patch("mosaic.repl_commands._beacon", mock_beacon):
+        with patch("mosaic.mosaic._beacon", mock_beacon):
             with patch("mosaic.repl_commands.execute_shb") as mock_shb:
                 with patch("mosaic.repl_commands.execute_rhb") as mock_rhb:
                     execute_hb(output_fn)
@@ -125,7 +127,7 @@ class TestExecuteCalcd:
         def output_fn(text: str) -> None:
             output_lines.append(text)
 
-        with patch("mosaic.repl_commands._beacon", mock_beacon):
+        with patch("mosaic.mosaic._beacon", mock_beacon):
             with patch("mosaic.repl_commands.calculate_data_distribution") as mock_calc:
                 execute_calcd(output_fn, method="weighted_shard")
                 mock_calc.assert_called_once_with("weighted_shard")
@@ -137,7 +139,7 @@ class TestExecuteCalcd:
         def output_fn(text: str) -> None:
             output_lines.append(text)
 
-        with patch("mosaic.repl_commands._beacon", None):
+        with patch("mosaic.mosaic._beacon", None):
             execute_calcd(output_fn, method="weighted_shard")
             assert any("Error" in line or "not initialized" in line for line in output_lines)
 
@@ -250,4 +252,162 @@ class TestProcessCommand:
         process_command("", output_fn)
         # Should not produce any output for empty command
         assert len(output_lines) == 0
+
+
+class TestReplCommandsWithTwoBeacons:
+    """Test REPL commands with two real beacons set up."""
+
+    def test_shb_rhb_hb_commands_with_two_beacons(self, temp_state_dir):
+        """Test that shb, rhb, and hb commands work correctly with 2 beacons."""
+        import mosaic.mosaic as mosaic_module
+        from mosaic_comms.beacon import Beacon
+
+        # Create configs for 2 beacons with different ports
+        config1 = create_test_config_with_state(
+            state_dir=temp_state_dir / "beacon1",
+            host="127.0.0.1",
+            heartbeat_port=6000,
+            comms_port=6001,
+            heartbeat_frequency=2,
+            heartbeat_tolerance=5,
+            heartbeat_wait_timeout=2,
+            stats_request_timeout=10,
+            server_crt="",
+            server_key="",
+            ca_crt="",
+            benchmark_data_location="",
+        )
+
+        config2 = create_test_config_with_state(
+            state_dir=temp_state_dir / "beacon2",
+            host="127.0.0.1",
+            heartbeat_port=6002,
+            comms_port=6003,
+            heartbeat_frequency=2,
+            heartbeat_tolerance=5,
+            heartbeat_wait_timeout=2,
+            stats_request_timeout=10,
+            server_crt="",
+            server_key="",
+            ca_crt="",
+            benchmark_data_location="",
+        )
+
+        # Add peer to config1 so it knows about config2
+        from mosaic_config.config import Peer
+        config1.peers = [
+            Peer(
+                host=config2.host,
+                heartbeat_port=config2.heartbeat_port,
+                comms_port=config2.comms_port,
+            )
+        ]
+
+        # Add peer to config2 so it knows about config1
+        config2.peers = [
+            Peer(
+                host=config1.host,
+                heartbeat_port=config1.heartbeat_port,
+                comms_port=config1.comms_port,
+            )
+        ]
+
+        with patch("mosaic_comms.beacon.StatsCollector") as mock_stats_class:
+            mock_stats = MagicMock()
+            mock_stats.get_last_stats_json.return_value = '{"cpu_percent": 45.3}'
+            mock_stats_class.return_value = mock_stats
+
+            # Create and start beacons
+            beacon1 = Beacon(config1)
+            beacon2 = Beacon(config2)
+
+            try:
+                # Set beacon1 as the global beacon (simulating what main() does)
+                original_beacon = mosaic_module._beacon
+                mosaic_module._beacon = beacon1
+
+                # Start both beacons
+                beacon1.start()
+                beacon2.start()
+
+                # Give them time to start listening
+                time.sleep(0.5)
+
+                # Send a heartbeat from beacon1 to beacon2 to establish connection
+                payload = {
+                    "host": config1.host,
+                    "port": config1.heartbeat_port,
+                    "comms_port": config1.comms_port,
+                    "stats": {},
+                }
+                beacon1.send_heartbeat(
+                    host=config2.host,
+                    port=config2.heartbeat_port,
+                    heartbeat_wait_timeout=config1.heartbeat_wait_timeout,
+                    server_crt=config1.server_crt,
+                    server_key=config1.server_key,
+                    ca_crt=config1.ca_crt,
+                    json_payload=payload,
+                )
+
+                # Wait a bit for heartbeat to be received
+                time.sleep(0.5)
+
+                # Collect output
+                output_lines = []
+
+                def output_fn(text: str) -> None:
+                    output_lines.append(text)
+
+                # Test shb command - should not raise an error
+                output_lines.clear()
+                execute_shb(output_fn)
+                assert len(output_lines) > 0
+                # Should not contain "Error: Beacon not initialized"
+                output_text = "".join(output_lines)
+                assert "Error: Beacon not initialized" not in output_text
+
+                # Test rhb command - should not raise an error
+                output_lines.clear()
+                execute_rhb(output_fn)
+                assert len(output_lines) > 0
+                # Should not contain "Error: Beacon not initialized"
+                output_text = "".join(output_lines)
+                assert "Error: Beacon not initialized" not in output_text
+
+                # Test hb command - should not raise an error
+                output_lines.clear()
+                execute_hb(output_fn)
+                assert len(output_lines) > 0
+                # Should not contain "Error: Beacon not initialized"
+                output_text = "".join(output_lines)
+                assert "Error: Beacon not initialized" not in output_text
+
+                # Test process_command with shb
+                output_lines.clear()
+                process_command("shb", output_fn)
+                assert len(output_lines) > 0
+                output_text = "".join(output_lines)
+                assert "Error: Beacon not initialized" not in output_text
+
+                # Test process_command with rhb
+                output_lines.clear()
+                process_command("rhb", output_fn)
+                assert len(output_lines) > 0
+                output_text = "".join(output_lines)
+                assert "Error: Beacon not initialized" not in output_text
+
+                # Test process_command with hb
+                output_lines.clear()
+                process_command("hb", output_fn)
+                assert len(output_lines) > 0
+                output_text = "".join(output_lines)
+                assert "Error: Beacon not initialized" not in output_text
+
+            finally:
+                # Restore original beacon
+                mosaic_module._beacon = original_beacon
+                # Stop beacons
+                beacon1.stop()
+                beacon2.stop()
 

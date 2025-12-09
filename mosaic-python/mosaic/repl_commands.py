@@ -2,8 +2,8 @@
 
 from typing import Callable, Optional
 
+import mosaic.mosaic as mosaic_module
 from mosaic.mosaic import (
-    _beacon,
     _format_receive_heartbeat_table,
     _format_send_heartbeat_table,
     calculate_data_distribution,
@@ -17,11 +17,11 @@ def execute_shb(output_fn: Callable[[str], None]) -> None:
     Args:
         output_fn: Function to call with output text
     """
-    if _beacon is None:
+    if mosaic_module._beacon is None:
         output_fn("Error: Beacon not initialized\n")
         return
 
-    statuses = _beacon.send_heartbeat_statuses
+    statuses = mosaic_module._beacon.send_heartbeat_statuses
     table = _format_send_heartbeat_table(statuses)
     output_fn(f"{table}\n")
 
@@ -33,11 +33,11 @@ def execute_rhb(output_fn: Callable[[str], None]) -> None:
     Args:
         output_fn: Function to call with output text
     """
-    if _beacon is None:
+    if mosaic_module._beacon is None:
         output_fn("Error: Beacon not initialized\n")
         return
 
-    statuses = _beacon.receive_heartbeat_statuses
+    statuses = mosaic_module._beacon.receive_heartbeat_statuses
     table = _format_receive_heartbeat_table(statuses)
     output_fn(f"{table}\n")
 
@@ -62,7 +62,7 @@ def execute_calcd(output_fn: Callable[[str], None], method: Optional[str] = None
         output_fn: Function to call with output text
         method: Distribution method - "weighted_shard" or "weighted_batches"
     """
-    if _beacon is None:
+    if mosaic_module._beacon is None:
         output_fn("Error: Beacon not initialized\n")
         return
 
