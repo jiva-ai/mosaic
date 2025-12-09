@@ -11,6 +11,7 @@ from mosaic.repl_commands import (
     execute_help,
     execute_rhb,
     execute_shb,
+    initialize,
     process_command,
 )
 from tests.conftest import create_test_config_with_state
@@ -34,8 +35,13 @@ class TestExecuteShb:
         def output_fn(text: str) -> None:
             output_lines.append(text)
 
-        with patch("mosaic.mosaic._beacon", mock_beacon):
+        # Initialize with mock beacon
+        initialize(mock_beacon)
+        try:
             execute_shb(output_fn)
+        finally:
+            # Clean up
+            initialize(None)
 
         assert len(output_lines) > 0
         assert any("127.0.0.1" in line or "127.0.0.1" in "".join(output_lines) for line in output_lines)
@@ -47,8 +53,15 @@ class TestExecuteShb:
         def output_fn(text: str) -> None:
             output_lines.append(text)
 
-        with patch("mosaic.mosaic._beacon", None):
+        # Ensure beacon is not initialized
+        original_beacon = None
+        from mosaic.repl_commands import _beacon as repl_beacon
+        original_beacon = repl_beacon
+        initialize(None)
+        try:
             execute_shb(output_fn)
+        finally:
+            initialize(original_beacon)
 
         assert any("Error" in line or "not initialized" in line for line in output_lines)
 
@@ -73,8 +86,13 @@ class TestExecuteRhb:
         def output_fn(text: str) -> None:
             output_lines.append(text)
 
-        with patch("mosaic.mosaic._beacon", mock_beacon):
+        # Initialize with mock beacon
+        initialize(mock_beacon)
+        try:
             execute_rhb(output_fn)
+        finally:
+            # Clean up
+            initialize(None)
 
         assert len(output_lines) > 0
 
@@ -85,8 +103,14 @@ class TestExecuteRhb:
         def output_fn(text: str) -> None:
             output_lines.append(text)
 
-        with patch("mosaic.mosaic._beacon", None):
+        # Ensure beacon is not initialized
+        from mosaic.repl_commands import _beacon as repl_beacon
+        original_beacon = repl_beacon
+        initialize(None)
+        try:
             execute_rhb(output_fn)
+        finally:
+            initialize(original_beacon)
 
         assert any("Error" in line or "not initialized" in line for line in output_lines)
 
@@ -105,12 +129,17 @@ class TestExecuteHb:
         def output_fn(text: str) -> None:
             output_lines.append(text)
 
-        with patch("mosaic.mosaic._beacon", mock_beacon):
+        # Initialize with mock beacon
+        initialize(mock_beacon)
+        try:
             with patch("mosaic.repl_commands.execute_shb") as mock_shb:
                 with patch("mosaic.repl_commands.execute_rhb") as mock_rhb:
                     execute_hb(output_fn)
                     mock_shb.assert_called_once_with(output_fn)
                     mock_rhb.assert_called_once_with(output_fn)
+        finally:
+            # Clean up
+            initialize(None)
 
 
 class TestExecuteCalcd:
@@ -127,10 +156,15 @@ class TestExecuteCalcd:
         def output_fn(text: str) -> None:
             output_lines.append(text)
 
-        with patch("mosaic.mosaic._beacon", mock_beacon):
-            with patch("mosaic.repl_commands.calculate_data_distribution") as mock_calc:
+        # Initialize with mock beacon
+        initialize(mock_beacon)
+        try:
+            with patch("mosaic.mosaic.calculate_data_distribution") as mock_calc:
                 execute_calcd(output_fn, method="weighted_shard")
                 mock_calc.assert_called_once_with("weighted_shard")
+        finally:
+            # Clean up
+            initialize(None)
 
     def test_execute_calcd_without_beacon(self):
         """Test execute_calcd when beacon is not initialized."""
@@ -139,9 +173,15 @@ class TestExecuteCalcd:
         def output_fn(text: str) -> None:
             output_lines.append(text)
 
-        with patch("mosaic.mosaic._beacon", None):
+        # Ensure beacon is not initialized
+        from mosaic.repl_commands import _beacon as repl_beacon
+        original_beacon = repl_beacon
+        initialize(None)
+        try:
             execute_calcd(output_fn, method="weighted_shard")
             assert any("Error" in line or "not initialized" in line for line in output_lines)
+        finally:
+            initialize(original_beacon)
 
 
 class TestExecuteHelp:
@@ -322,9 +362,8 @@ class TestReplCommandsWithTwoBeacons:
             beacon2 = Beacon(config2)
 
             try:
-                # Set beacon1 as the global beacon (simulating what main() does)
-                original_beacon = mosaic_module._beacon
-                mosaic_module._beacon = beacon1
+                # Initialize REPL commands with beacon1 (simulating what main() does)
+                initialize(beacon1)
 
                 # Start both beacons
                 beacon1.start()
@@ -405,8 +444,8 @@ class TestReplCommandsWithTwoBeacons:
                 assert "Error: Beacon not initialized" not in output_text
 
             finally:
-                # Restore original beacon
-                mosaic_module._beacon = original_beacon
+                # Restore original beacon state
+                initialize(None)
                 # Stop beacons
                 beacon1.stop()
                 beacon2.stop()

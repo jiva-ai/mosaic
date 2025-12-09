@@ -1,13 +1,25 @@
 """Shared REPL command execution functions for Mosaic orchestrator."""
 
-from typing import Callable, Optional
+from typing import Callable, Optional, TYPE_CHECKING
 
-import mosaic.mosaic as mosaic_module
-from mosaic.mosaic import (
-    _format_receive_heartbeat_table,
-    _format_send_heartbeat_table,
-    calculate_data_distribution,
-)
+if TYPE_CHECKING:
+    from mosaic_comms.beacon import Beacon
+
+# Module-level beacon reference (set via initialize() function)
+_beacon: Optional["Beacon"] = None
+
+
+def initialize(beacon: "Beacon") -> None:
+    """
+    Initialize the repl_commands module with the beacon instance.
+    
+    This should be called once from mosaic.py after the beacon is created.
+    
+    Args:
+        beacon: The Beacon instance to use for REPL commands
+    """
+    global _beacon
+    _beacon = beacon
 
 
 def execute_shb(output_fn: Callable[[str], None]) -> None:
@@ -17,11 +29,12 @@ def execute_shb(output_fn: Callable[[str], None]) -> None:
     Args:
         output_fn: Function to call with output text
     """
-    if mosaic_module._beacon is None:
+    if _beacon is None:
         output_fn("Error: Beacon not initialized\n")
         return
 
-    statuses = mosaic_module._beacon.send_heartbeat_statuses
+    statuses = _beacon.send_heartbeat_statuses
+    from mosaic.mosaic import _format_send_heartbeat_table
     table = _format_send_heartbeat_table(statuses)
     output_fn(f"{table}\n")
 
@@ -33,11 +46,12 @@ def execute_rhb(output_fn: Callable[[str], None]) -> None:
     Args:
         output_fn: Function to call with output text
     """
-    if mosaic_module._beacon is None:
+    if _beacon is None:
         output_fn("Error: Beacon not initialized\n")
         return
 
-    statuses = mosaic_module._beacon.receive_heartbeat_statuses
+    statuses = _beacon.receive_heartbeat_statuses
+    from mosaic.mosaic import _format_receive_heartbeat_table
     table = _format_receive_heartbeat_table(statuses)
     output_fn(f"{table}\n")
 
@@ -62,13 +76,14 @@ def execute_calcd(output_fn: Callable[[str], None], method: Optional[str] = None
         output_fn: Function to call with output text
         method: Distribution method - "weighted_shard" or "weighted_batches"
     """
-    if mosaic_module._beacon is None:
+    if _beacon is None:
         output_fn("Error: Beacon not initialized\n")
         return
 
     # Collect output from calculate_data_distribution
     import io
     from contextlib import redirect_stdout
+    from mosaic.mosaic import calculate_data_distribution
 
     output_buffer = io.StringIO()
     try:

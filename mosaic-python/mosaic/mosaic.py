@@ -552,6 +552,14 @@ def main() -> None:
         logger.error(f"Error starting Beacon: {e}")
         sys.exit(1)
     
+    # Step 3.5: Initialize REPL commands with beacon
+    try:
+        from mosaic.repl_commands import initialize as init_repl_commands
+        init_repl_commands(_beacon)
+        logger.debug("REPL commands initialized")
+    except Exception as e:
+        logger.warning(f"Error initializing REPL commands: {e}")
+    
     # Step 4: Start REPL if enabled
     if repl_enabled:
         if args.textual:
