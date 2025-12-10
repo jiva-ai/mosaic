@@ -68,6 +68,12 @@ class Beacon:
         # Track chunks being received (chunk_id -> list of chunks)
         self._chunk_storage: Dict[str, Dict[str, Any]] = {}
         
+        # Track training threads (session_id -> thread)
+        self._training_threads: Dict[str, threading.Thread] = {}
+        
+        # Track training cancellation flags (session_id -> Event)
+        self._training_cancelled: Dict[str, threading.Event] = {}
+        
         # Validate SSL certificates and set flag
         self._ssl_enabled = self._validate_ssl_certificates()
         
@@ -78,6 +84,9 @@ class Beacon:
         self.register("exdplan_chunk", self._handle_execute_data_plan_chunk)
         self.register("exdplan_finalize", self._handle_execute_data_plan_finalize)
         self.register("exmplan", self._handle_execute_model_plan)
+        self.register("start_training", self._handle_start_training)
+        self.register("training_status", self._handle_training_status)
+        self.register("cancel_training", self._handle_cancel_training)
 
         # Thread control
         self._stop_event = threading.Event()
@@ -2375,4 +2384,391 @@ class Beacon:
                     sock.close()
                 except Exception:
                     pass
+
+    def _handle_start_training(self, payload: Union[Dict[str, Any], bytes]) -> Optional[Dict[str, Any]]:
+        """
+        Handle start_training command from caller node.
+        
+        Receives session_id and starts training on this node's shard session.
+        Sends status updates back to caller at key points.
+        
+        Args:
+            payload: Dict with session_id and caller info (host, comms_port)
+        
+        Returns:
+            Dictionary with status information
+        """
+        try:
+            if isinstance(payload, bytes):
+                import pickle
+                payload = pickle.loads(payload)
+            
+            if not isinstance(payload, dict):
+                logger.error("start_training payload must be a dict")
+                return {"status": "error", "message": "Payload must be a dict"}
+            
+            session_id = payload.get("session_id")
+            caller_host = payload.get("caller_host")
+            caller_port = payload.get("caller_port")
+            
+            if not session_id:
+                logger.error("start_training payload missing session_id")
+                return {"status": "error", "message": "session_id required"}
+            
+            # Import here to avoid circular imports
+            import mosaic.mosaic as mosaic_module
+            from mosaic_config.state import SessionStatus
+            from mosaic_planner.model_execution import train_model_from_session
+            
+            # Get the shard session for this node
+            if mosaic_module._session_manager is None:
+                logger.error("Session manager not initialized")
+                return {"status": "error", "message": "Session manager not initialized"}
+            
+            session = mosaic_module._session_manager.get_session_by_id(session_id)
+            if session is None:
+                logger.error(f"Session {session_id} not found")
+                return {"status": "error", "message": f"Session {session_id} not found"}
+            
+            # Update session status to TRAINING
+            session.status = SessionStatus.TRAINING
+            mosaic_module._session_manager.update_session(session_id, status=SessionStatus.TRAINING)
+            
+            # Send status update: message received and starting to train
+            if caller_host and caller_port:
+                try:
+                    # Get node key for status tracking
+                    node_key = f"{self.config.host}:{self.config.comms_port}"
+                    self.send_command(
+                        host=caller_host,
+                        port=caller_port,
+                        command="training_status",
+                        payload={
+                            "session_id": session_id,
+                            "status": "starting",
+                            "message": "Training started",
+                            "node_key": node_key,
+                        },
+                        timeout=30.0,
+                    )
+                except Exception as e:
+                    logger.warning(f"Failed to send training status update to caller: {e}")
+            
+            # Create cancellation event for this training
+            cancel_event = threading.Event()
+            self._training_cancelled[session_id] = cancel_event
+            
+            # Start training in a separate thread so it can be cancelled
+            def training_worker():
+                """Worker function that runs training in a separate thread."""
+                trained_model = None
+                try:
+                    # Check for cancellation before starting
+                    if cancel_event.is_set():
+                        logger.info(f"Training for session {session_id} was cancelled before start")
+                        return
+                    
+                    trained_model = train_model_from_session(session, config=mosaic_module._config)
+                    
+                    # Check if training was cancelled
+                    if cancel_event.is_set():
+                        logger.info(f"Training for session {session_id} was cancelled after completion")
+                        return
+                    
+                    # Update session status to COMPLETE
+                    session.status = SessionStatus.COMPLETE
+                    mosaic_module._session_manager.update_session(session_id, status=SessionStatus.COMPLETE)
+                    
+                    # Send status update: training complete
+                    if caller_host and caller_port:
+                        try:
+                            # Get node key for status tracking
+                            node_key = f"{self.config.host}:{self.config.comms_port}"
+                            self.send_command(
+                                host=caller_host,
+                                port=caller_port,
+                                command="training_status",
+                                payload={
+                                    "session_id": session_id,
+                                    "status": "complete",
+                                    "message": "Training completed successfully",
+                                    "model_id": trained_model.id,
+                                    "node_key": node_key,
+                                },
+                                timeout=30.0,
+                            )
+                        except Exception as e:
+                            logger.warning(f"Failed to send training completion to caller: {e}")
+                    
+                    logger.info(f"Training completed for session {session_id}")
+                except Exception as e:
+                    # Check if training was cancelled
+                    if cancel_event.is_set():
+                        logger.info(f"Training for session {session_id} was cancelled during error handling")
+                        return
+                    
+                    # Update session status to ERROR
+                    session.status = SessionStatus.ERROR
+                    error_msg = str(e)
+                    mosaic_module._session_manager.update_session(session_id, status=SessionStatus.ERROR)
+                    
+                    # Send status update: error during training
+                    if caller_host and caller_port:
+                        try:
+                            # Get node key for status tracking
+                            node_key = f"{self.config.host}:{self.config.comms_port}"
+                            self.send_command(
+                                host=caller_host,
+                                port=caller_port,
+                                command="training_status",
+                                payload={
+                                    "session_id": session_id,
+                                    "status": "error",
+                                    "message": error_msg,
+                                    "node_key": node_key,
+                                },
+                                timeout=30.0,
+                            )
+                        except Exception as e2:
+                            logger.warning(f"Failed to send training error to caller: {e2}")
+                    
+                    logger.error(f"Training failed for session {session_id}: {e}")
+                finally:
+                    # Remove thread and cancellation event from tracking when done
+                    if session_id in self._training_threads:
+                        del self._training_threads[session_id]
+                    if session_id in self._training_cancelled:
+                        del self._training_cancelled[session_id]
+            
+            # Start training thread
+            training_thread = threading.Thread(target=training_worker, daemon=True, name=f"Training-{session_id}")
+            self._training_threads[session_id] = training_thread
+            training_thread.start()
+            
+            logger.info(f"Started training thread for session {session_id}")
+            return {
+                "status": "success",
+                "message": "Training started",
+            }
+                
+        except Exception as e:
+            logger.error(f"Error handling start_training: {e}")
+            return {"status": "error", "message": str(e)}
+
+    def _handle_training_status(self, payload: Union[Dict[str, Any], bytes]) -> Optional[Dict[str, Any]]:
+        """
+        Handle training_status command from receiving nodes.
+        
+        Updates the caller's session state with training progress from remote nodes.
+        
+        Args:
+            payload: Dict with session_id, status, and message
+        
+        Returns:
+            Dictionary with acknowledgment
+        """
+        try:
+            if isinstance(payload, bytes):
+                import pickle
+                payload = pickle.loads(payload)
+            
+            if not isinstance(payload, dict):
+                logger.error("training_status payload must be a dict")
+                return {"status": "error", "message": "Payload must be a dict"}
+            
+            session_id = payload.get("session_id")
+            status = payload.get("status")
+            message = payload.get("message")
+            
+            if not session_id or not status:
+                logger.error("training_status payload missing session_id or status")
+                return {"status": "error", "message": "session_id and status required"}
+            
+            # Import here to avoid circular imports
+            import mosaic.mosaic as mosaic_module
+            from mosaic_config.state import SessionStatus
+            
+            # Get the parent session
+            if mosaic_module._session_manager is None:
+                logger.warning("Session manager not initialized, cannot update training status")
+                return {"status": "acknowledged"}
+            
+            session = mosaic_module._session_manager.get_session_by_id(session_id)
+            if session is None:
+                logger.warning(f"Session {session_id} not found for training status update")
+                return {"status": "acknowledged"}
+            
+            # Initialize training state tracking if not present
+            if "training_nodes" not in session.data_distribution_state:
+                session.data_distribution_state["training_nodes"] = {}
+            
+            # Update training state for this node
+            # Use the node key from data_distribution_state if available
+            node_key = payload.get("node_key")  # Optional: host:port or host:port:shard
+            if not node_key:
+                # Try to infer from message or use a default
+                node_key = "unknown"
+            
+            session.data_distribution_state["training_nodes"][node_key] = {
+                "status": status,
+                "message": message,
+                "model_id": payload.get("model_id"),
+            }
+            
+            # Update overall session status based on all nodes
+            all_statuses = [n.get("status") for n in session.data_distribution_state["training_nodes"].values()]
+            if "error" in all_statuses:
+                # If any node has error, keep ERROR status
+                if session.status != SessionStatus.ERROR:
+                    session.status = SessionStatus.ERROR
+                    mosaic_module._session_manager.update_session(session_id, status=SessionStatus.ERROR)
+            elif all(s == "complete" for s in all_statuses if s):
+                # All nodes complete
+                session.status = SessionStatus.COMPLETE
+                mosaic_module._session_manager.update_session(session_id, status=SessionStatus.COMPLETE)
+            # Otherwise, keep TRAINING status
+            
+            logger.info(f"Training status update for session {session_id}: {status} - {message}")
+            return {"status": "acknowledged"}
+            
+        except Exception as e:
+            logger.error(f"Error handling training_status: {e}")
+            return {"status": "error", "message": str(e)}
+    
+    def _handle_cancel_training(self, payload: Union[Dict[str, Any], bytes]) -> Optional[Dict[str, Any]]:
+        """
+        Handle cancel_training command from caller node.
+        
+        Terminates the training thread for the specified session, cleans up model files,
+        and updates session status.
+        
+        Args:
+            payload: Dict with session_id
+        
+        Returns:
+            Dictionary with status information
+        """
+        try:
+            if isinstance(payload, bytes):
+                import pickle
+                payload = pickle.loads(payload)
+            
+            if not isinstance(payload, dict):
+                logger.error("cancel_training payload must be a dict")
+                return {"status": "error", "message": "Payload must be a dict"}
+            
+            session_id = payload.get("session_id")
+            if not session_id:
+                logger.error("cancel_training payload missing session_id")
+                return {"status": "error", "message": "session_id required"}
+            
+            # Import here to avoid circular imports
+            import mosaic.mosaic as mosaic_module
+            from mosaic_config.state import SessionStatus
+            from pathlib import Path
+            
+            # Get the session
+            if mosaic_module._session_manager is None:
+                logger.error("Session manager not initialized")
+                return {"status": "error", "message": "Session manager not initialized"}
+            
+            session = mosaic_module._session_manager.get_session_by_id(session_id)
+            if session is None:
+                logger.error(f"Session {session_id} not found")
+                return {"status": "error", "message": f"Session {session_id} not found"}
+            
+            # Check if training thread exists
+            has_thread = session_id in self._training_threads
+            
+            if has_thread:
+                # Get the training thread and cancellation event
+                training_thread = self._training_threads[session_id]
+                cancel_event = self._training_cancelled.get(session_id)
+                
+                # Set cancellation flag
+                if cancel_event:
+                    cancel_event.set()
+                
+                # Remove from tracking (worker will check cancellation flag)
+                del self._training_threads[session_id]
+                if session_id in self._training_cancelled:
+                    del self._training_cancelled[session_id]
+                
+                # Wait a bit for thread to check cancellation flag and exit
+                training_thread.join(timeout=2.0)
+            else:
+                logger.warning(f"No training thread found for session {session_id}")
+            
+            # Clean up model files associated with this session (always run cleanup)
+            try:
+                if session.model_id:
+                    # Find and delete model files
+                    models_path = Path(mosaic_module._config.models_location) if mosaic_module._config.models_location else Path("models")
+                    
+                    # Ensure models_path is absolute
+                    if not models_path.is_absolute():
+                        # If relative, resolve relative to current working directory
+                        models_path = models_path.resolve()
+                    
+                    logger.info(f"Cleaning up model files for session {session_id}, model_id: {session.model_id}, models_path: {models_path}")
+                    
+                    # Look for model files with this session's model_id
+                    if models_path.exists():
+                        search_pattern = f"*{session.model_id}*"
+                        model_files = list(models_path.rglob(search_pattern))
+                        logger.info(f"Found {len(model_files)} model files matching pattern {search_pattern} in {models_path}")
+                        if not model_files:
+                            # Try also searching for files with the model_id as a prefix or suffix
+                            all_files = list(models_path.rglob("*"))
+                            logger.info(f"Total files in {models_path}: {len(all_files)}")
+                            for f in all_files[:10]:  # Log first 10 for debugging
+                                logger.info(f"  File: {f}, name: {f.name}")
+                        
+                        for model_file in model_files:
+                            try:
+                                if model_file.is_file():
+                                    model_file.unlink()
+                                    logger.info(f"Deleted model file: {model_file}")
+                                else:
+                                    logger.warning(f"Skipping non-file: {model_file}")
+                            except Exception as e:
+                                logger.warning(f"Failed to delete model file {model_file}: {e}")
+                    else:
+                        logger.warning(f"Models path does not exist: {models_path}")
+                
+                # Clear model_id from session
+                session.model_id = None
+                mosaic_module._session_manager.update_session(session_id, model_id=None)
+            except Exception as e:
+                logger.warning(f"Error cleaning up model files: {e}")
+            
+            # Update session status to IDLE
+            session.status = SessionStatus.IDLE
+            mosaic_module._session_manager.update_session(session_id, status=SessionStatus.IDLE)
+            
+            if not has_thread:
+                return {"status": "success", "message": "No training thread found, session set to IDLE"}
+            
+            logger.info(f"Training cancelled for session {session_id}")
+            return {
+                "status": "success",
+                "message": "Training cancelled successfully",
+            }
+            
+        except Exception as e:
+            logger.error(f"Error handling cancel_training: {e}")
+            # Try to set status to ERROR
+            try:
+                import mosaic.mosaic as mosaic_module
+                from mosaic_config.state import SessionStatus
+                if mosaic_module._session_manager is not None:
+                    session_id = payload.get("session_id") if isinstance(payload, dict) else None
+                    if session_id:
+                        session = mosaic_module._session_manager.get_session_by_id(session_id)
+                        if session:
+                            session.status = SessionStatus.ERROR
+                            mosaic_module._session_manager.update_session(session_id, status=SessionStatus.ERROR)
+            except Exception:
+                pass
+            return {"status": "error", "message": str(e)}
 

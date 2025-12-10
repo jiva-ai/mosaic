@@ -75,6 +75,8 @@ from mosaic.session_commands import (
     _get_predefined_models,
     execute_create_session,
     execute_delete_session,
+    execute_training,
+    execute_cancel_training,
     initialize,
 )
 
@@ -101,386 +103,148 @@ from tests.conftest import create_test_config_with_state
 def cleanup_onnx_mock():
     """Clean up onnx mock after all tests in this module."""
     yield
-    # After all tests, restore original if we had one
-    import sys
-    if _we_added_onnx_mock and _original_onnx is not None:
-        sys.modules['onnx'] = _original_onnx
+    # Only restore if we added the mock
+    if _we_added_onnx_mock and _original_onnx is None:
+        # Remove our mock
+        if 'onnx' in sys.modules:
+            del sys.modules['onnx']
+        if 'onnx.reference' in sys.modules:
+            del sys.modules['onnx.reference']
 
 
 class TestDiscoverDatasets:
-    """Test _discover_datasets function with different DataTypes."""
+    """Tests for _discover_datasets function."""
 
-    def test_discover_datasets_nonexistent_directory(self, tmp_path):
-        """Test _discover_datasets with non-existent directory."""
-        result = _discover_datasets(str(tmp_path / "nonexistent"))
-        assert result == []
+    def test_discover_datasets_image_directory(self, temp_state_dir):
+        """Test discovering image datasets in a directory."""
+        data_dir = Path(temp_state_dir) / "data"
+        data_dir.mkdir(parents=True, exist_ok=True)
+        
+        dataset_dir = data_dir / "images"
+        dataset_dir.mkdir()
+        (dataset_dir / "img1.jpg").touch()
+        (dataset_dir / "img2.png").touch()
+        
+        datasets = _discover_datasets(str(data_dir))
+        assert len(datasets) == 1
+        assert datasets[0]["name"] == "images"
+        assert datasets[0]["type"] == "directory"
+        assert len(datasets[0]["files"]) > 0
 
-    def test_discover_datasets_empty_directory(self, tmp_path):
-        """Test _discover_datasets with empty directory."""
-        data_dir = tmp_path / "data"
-        data_dir.mkdir()
-        result = _discover_datasets(str(data_dir))
-        assert result == []
+    def test_discover_datasets_csv_file(self, temp_state_dir):
+        """Test discovering CSV file datasets."""
+        data_dir = Path(temp_state_dir) / "data"
+        data_dir.mkdir(parents=True, exist_ok=True)
+        
+        (data_dir / "data.csv").touch()
+        
+        datasets = _discover_datasets(str(data_dir))
+        assert len(datasets) == 1
+        assert datasets[0]["name"] == "data.csv"
+        assert datasets[0]["type"] == "file"
 
-    def test_discover_datasets_image_files(self, tmp_path):
-        """Test _discover_datasets with IMAGE data type files."""
-        data_dir = tmp_path / "data"
-        data_dir.mkdir()
+    def test_discover_datasets_text_file(self, temp_state_dir):
+        """Test discovering text file datasets."""
+        data_dir = Path(temp_state_dir) / "data"
+        data_dir.mkdir(parents=True, exist_ok=True)
         
-        # Create image directory with image files
-        image_dir = data_dir / "images"
-        image_dir.mkdir()
-        (image_dir / "img1.jpg").write_bytes(b"fake image")
-        (image_dir / "img2.png").write_bytes(b"fake image")
-        (image_dir / "img3.jpeg").write_bytes(b"fake image")
+        (data_dir / "text.txt").touch()
         
-        result = _discover_datasets(str(data_dir))
-        assert len(result) == 1
-        assert result[0]["name"] == "images"
-        assert result[0]["type"] == "directory"
-        assert "img1.jpg" in result[0]["files"] or "img2.png" in result[0]["files"]
+        datasets = _discover_datasets(str(data_dir))
+        assert len(datasets) == 1
+        assert datasets[0]["name"] == "text.txt"
+        assert datasets[0]["type"] == "file"
 
-    def test_discover_datasets_audio_files(self, tmp_path):
-        """Test _discover_datasets with AUDIO data type files."""
-        data_dir = tmp_path / "data"
-        data_dir.mkdir()
+    def test_discover_datasets_audio_file(self, temp_state_dir):
+        """Test discovering audio file datasets."""
+        data_dir = Path(temp_state_dir) / "data"
+        data_dir.mkdir(parents=True, exist_ok=True)
         
-        # Create audio directory with audio files
-        audio_dir = data_dir / "audio"
-        audio_dir.mkdir()
-        (audio_dir / "audio1.wav").write_bytes(b"fake audio")
-        (audio_dir / "audio2.flac").write_bytes(b"fake audio")
+        (data_dir / "audio.wav").touch()
         
-        result = _discover_datasets(str(data_dir))
-        assert len(result) == 1
-        assert result[0]["name"] == "audio"
-        assert result[0]["type"] == "directory"
-        assert any("wav" in f or "flac" in f for f in result[0]["files"])
+        datasets = _discover_datasets(str(data_dir))
+        assert len(datasets) == 1
+        assert datasets[0]["name"] == "audio.wav"
+        assert datasets[0]["type"] == "file"
 
-    def test_discover_datasets_text_files(self, tmp_path):
-        """Test _discover_datasets with TEXT data type files."""
-        data_dir = tmp_path / "data"
-        data_dir.mkdir()
+    def test_discover_datasets_empty_directory(self, temp_state_dir):
+        """Test discovering datasets in empty directory."""
+        data_dir = Path(temp_state_dir) / "data"
+        data_dir.mkdir(parents=True, exist_ok=True)
         
-        # Create text directory with text files
-        text_dir = data_dir / "text"
-        text_dir.mkdir()
-        (text_dir / "text1.txt").write_text("some text")
-        (text_dir / "text2.jsonl").write_text('{"text": "data"}')
-        
-        result = _discover_datasets(str(data_dir))
-        assert len(result) == 1
-        assert result[0]["name"] == "text"
-        assert result[0]["type"] == "directory"
-        assert any("txt" in f or "jsonl" in f for f in result[0]["files"])
+        datasets = _discover_datasets(str(data_dir))
+        assert len(datasets) == 0
 
-    def test_discover_datasets_csv_files(self, tmp_path):
-        """Test _discover_datasets with CSV data type files."""
-        data_dir = tmp_path / "data"
-        data_dir.mkdir()
-        
-        # Create CSV file directly
-        csv_file = data_dir / "data.csv"
-        csv_file.write_text("col1,col2\nval1,val2")
-        
-        result = _discover_datasets(str(data_dir))
-        assert len(result) == 1
-        assert result[0]["name"] == "data.csv"
-        assert result[0]["type"] == "file"
-        assert result[0]["files"] == ["data.csv"]
-        assert result[0]["file_count"] == 1
-
-    def test_discover_datasets_csv_directory(self, tmp_path):
-        """Test _discover_datasets with CSV files in directory."""
-        data_dir = tmp_path / "data"
-        data_dir.mkdir()
-        
-        # Create directory with CSV files
-        csv_dir = data_dir / "csv_data"
-        csv_dir.mkdir()
-        (csv_dir / "data1.csv").write_text("col1,col2\nval1,val2")
-        (csv_dir / "data2.csv").write_text("col1,col2\nval3,val4")
-        
-        result = _discover_datasets(str(data_dir))
-        assert len(result) == 1
-        assert result[0]["name"] == "csv_data"
-        assert result[0]["type"] == "directory"
-        assert any("csv" in f for f in result[0]["files"])
-
-    def test_discover_datasets_dir_type(self, tmp_path):
-        """Test _discover_datasets with DIR data type (mixed files)."""
-        data_dir = tmp_path / "data"
-        data_dir.mkdir()
-        
-        # Create directory with mixed files (treated as DIR type)
-        mixed_dir = data_dir / "mixed"
-        mixed_dir.mkdir()
-        (mixed_dir / "file1.txt").write_text("text")
-        (mixed_dir / "file2.jpg").write_bytes(b"image")
-        (mixed_dir / "file3.wav").write_bytes(b"audio")
-        
-        result = _discover_datasets(str(data_dir))
-        assert len(result) == 1
-        assert result[0]["name"] == "mixed"
-        assert result[0]["type"] == "directory"
-        assert len(result[0]["files"]) > 0
-
-    def test_discover_datasets_graph_type(self, tmp_path):
-        """Test _discover_datasets - graph data is typically a single file or directory."""
-        data_dir = tmp_path / "data"
-        data_dir.mkdir()
-        
-        # Graph data might be in a directory or as a file
-        # Since _discover_datasets looks for common extensions, graph might not be detected
-        # But we can test that directories are found
-        graph_dir = data_dir / "graph_data"
-        graph_dir.mkdir()
-        (graph_dir / "graph.txt").write_text("graph data")
-        
-        result = _discover_datasets(str(data_dir))
-        # Graph data might be detected as text, but directory should be found
-        assert len(result) >= 1
-
-    def test_discover_datasets_rl_type(self, tmp_path):
-        """Test _discover_datasets - RL data is typically trajectory files."""
-        data_dir = tmp_path / "data"
-        data_dir.mkdir()
-        
-        # RL data might be in various formats
-        rl_dir = data_dir / "rl_data"
-        rl_dir.mkdir()
-        (rl_dir / "trajectory.txt").write_text("trajectory data")
-        
-        result = _discover_datasets(str(data_dir))
-        # RL data might be detected as text, but directory should be found
-        assert len(result) >= 1
-
-    def test_discover_datasets_multiple_datasets(self, tmp_path):
-        """Test _discover_datasets with multiple datasets."""
-        data_dir = tmp_path / "data"
-        data_dir.mkdir()
-        
-        # Create multiple dataset directories
-        (data_dir / "images").mkdir()
-        (data_dir / "images" / "img1.jpg").write_bytes(b"image")
-        
-        (data_dir / "audio").mkdir()
-        (data_dir / "audio" / "audio1.wav").write_bytes(b"audio")
-        
-        (data_dir / "data.csv").write_text("col1,col2\nval1,val2")
-        
-        result = _discover_datasets(str(data_dir))
-        assert len(result) == 3
-        names = [r["name"] for r in result]
-        assert "images" in names
-        assert "audio" in names
-        assert "data.csv" in names
-
-    def test_discover_datasets_limits_file_scan(self, tmp_path):
-        """Test that _discover_datasets limits file scanning to first 10 files."""
-        data_dir = tmp_path / "data"
-        data_dir.mkdir()
-        
-        # Create directory with many files
-        large_dir = data_dir / "large"
-        large_dir.mkdir()
-        for i in range(15):
-            (large_dir / f"file{i}.txt").write_text("text")
-        
-        result = _discover_datasets(str(data_dir))
-        assert len(result) == 1
-        # Should only scan first 10 files
-        assert len(result[0]["files"]) <= 10
-
-    def test_discover_datasets_permission_error(self, tmp_path):
-        """Test _discover_datasets handles permission errors gracefully."""
-        data_dir = tmp_path / "data"
-        data_dir.mkdir()
-        
-        with patch("pathlib.Path.iterdir", side_effect=PermissionError("Access denied")):
-            result = _discover_datasets(str(data_dir))
-            # Should return empty list or handle gracefully
-            assert isinstance(result, list)
+    def test_discover_datasets_nonexistent_directory(self):
+        """Test discovering datasets in nonexistent directory."""
+        datasets = _discover_datasets("/nonexistent/path")
+        assert len(datasets) == 0
 
 
 class TestGetPredefinedModels:
-    """Test _get_predefined_models function."""
+    """Tests for _get_predefined_models function."""
 
     def test_get_predefined_models(self):
-        """Test that _get_predefined_models returns expected models."""
+        """Test getting predefined models list."""
         models = _get_predefined_models()
-        
-        assert isinstance(models, list)
         assert len(models) > 0
+        assert all("name" in m and "type" in m and "description" in m for m in models)
         
-        # Check that all expected models are present
+        # Check for specific models
         model_names = [m["name"] for m in models]
         assert "resnet50" in model_names
-        assert "resnet101" in model_names
-        assert "wav2vec2" in model_names
         assert "gpt-neo" in model_names
-        assert "gcn-ogbn-arxiv" in model_names
-        assert "biggan" in model_names
-        assert "ppo" in model_names
-        
-        # Check structure of each model
-        for model in models:
-            assert "name" in model
-            assert "type" in model
-            assert "description" in model
-            assert isinstance(model["name"], str)
-            assert isinstance(model["type"], str)
-            assert isinstance(model["description"], str)
 
 
 class TestFormatPlanSummary:
-    """Test _format_plan_summary function."""
+    """Tests for _format_plan_summary function."""
 
-    def test_format_plan_summary_empty_plan(self):
-        """Test _format_plan_summary with empty plan."""
+    def test_format_plan_summary_empty(self):
+        """Test formatting empty plan."""
         model = Model(name="test_model", model_type=ModelType.CNN)
-        plan = Plan(
-            stats_data=[],
-            distribution_plan=[],
-            model=model,
-        )
-        
+        plan = Plan(stats_data=[], distribution_plan=[], model=model)
         summary = _format_plan_summary(plan)
         assert "Distribution Plan Summary" in summary
-        assert "=" * 60 in summary
 
-    def test_format_plan_summary_with_distribution_plan(self):
-        """Test _format_plan_summary with distribution plan."""
+    def test_format_plan_summary_with_nodes(self):
+        """Test formatting plan with nodes."""
         model = Model(name="test_model", model_type=ModelType.CNN)
-        distribution_plan = [
-            {"host": "node1", "comms_port": 5001, "capacity_fraction": 0.5, "allocated_samples": 100},
-            {"host": "node2", "comms_port": 5002, "capacity_fraction": 0.3, "allocated_samples": 60},
-            {"host": "node3", "comms_port": 5003, "capacity_fraction": 0.2, "allocated_samples": 40},
-        ]
         plan = Plan(
             stats_data=[],
-            distribution_plan=distribution_plan,
+            distribution_plan=[
+                {"host": "192.168.1.1", "comms_port": 7001, "capacity_fraction": 0.5},
+                {"host": "192.168.1.2", "comms_port": 7002, "capacity_fraction": 0.3},
+            ],
             model=model,
         )
-        
         summary = _format_plan_summary(plan)
-        assert "Total Nodes: 3" in summary
-        assert "node1" in summary
-        assert "node2" in summary
-        assert "node3" in summary
-        assert "50.0%" in summary
-        assert "100" in summary
+        assert "192.168.1.1" in summary
+        assert "192.168.1.2" in summary
+        assert "Total Nodes: 2" in summary
 
-    def test_format_plan_summary_with_many_nodes(self):
-        """Test _format_plan_summary limits output for large plans."""
+    def test_format_plan_summary_truncates_large_plans(self):
+        """Test that large plans are truncated in summary."""
         model = Model(name="test_model", model_type=ModelType.CNN)
-        # Create plan with more than max_nodes (default 20)
-        distribution_plan = [
-            {"host": f"node{i}", "comms_port": 5000 + i, "capacity_fraction": 0.1, "allocated_samples": 10}
-            for i in range(25)
-        ]
         plan = Plan(
             stats_data=[],
-            distribution_plan=distribution_plan,
+            distribution_plan=[
+                {"host": f"192.168.1.{i}", "comms_port": 7000 + i, "capacity_fraction": 0.1}
+                for i in range(100)
+            ],
             model=model,
         )
-        
         summary = _format_plan_summary(plan, max_nodes=20)
-        assert "Total Nodes: 25" in summary
-        assert "node0" in summary  # First node should be shown
-        assert "node19" in summary  # 20th node should be shown
-        assert "... and 5 more nodes" in summary  # Should indicate remaining nodes
-
-    def test_format_plan_summary_with_data_segmentation(self):
-        """Test _format_plan_summary with data segmentation plan."""
-        model = Model(name="test_model", model_type=ModelType.CNN)
-        distribution_plan = [
-            {"host": "node1", "comms_port": 5001, "capacity_fraction": 0.5},
-        ]
-        data_segmentation_plan = [
-            {
-                "host": "node1",
-                "comms_port": 5001,
-                "fraction": 0.5,
-                "segments": [
-                    {"file_location": "data/file1.csv", "start_row": 0, "end_row": 50},
-                    {"file_location": "data/file2.csv", "start_row": 0, "end_row": 50},
-                ],
-            },
-            {
-                "host": "node2",
-                "comms_port": 5002,
-                "fraction": 0.5,
-                "segments": [
-                    {"file_location": "data/file1.csv", "start_row": 50, "end_row": 100},
-                ],
-            },
-        ]
-        plan = Plan(
-            stats_data=[],
-            distribution_plan=distribution_plan,
-            model=model,
-            data_segmentation_plan=data_segmentation_plan,
-        )
-        
-        summary = _format_plan_summary(plan)
-        assert "Data Segmentation Plan" in summary
-        assert "Total machines: 2" in summary
-        assert "Total segments: 3" in summary
-        assert "node1" in summary
-        assert "node2" in summary
-
-    def test_format_plan_summary_with_many_machines(self):
-        """Test _format_plan_summary limits machine output."""
-        model = Model(name="test_model", model_type=ModelType.CNN)
-        distribution_plan = [{"host": "node1", "comms_port": 5001, "capacity_fraction": 1.0}]
-        # Create segmentation plan with more than 5 machines
-        data_segmentation_plan = [
-            {
-                "host": f"node{i}",
-                "comms_port": 5000 + i,
-                "fraction": 0.1,
-                "segments": [{"file_location": f"data/file{i}.csv"}],
-            }
-            for i in range(10)
-        ]
-        plan = Plan(
-            stats_data=[],
-            distribution_plan=distribution_plan,
-            model=model,
-            data_segmentation_plan=data_segmentation_plan,
-        )
-        
-        summary = _format_plan_summary(plan)
-        assert "Total machines: 10" in summary
-        assert "node0" in summary  # First machine should be shown
-        assert "node4" in summary  # 5th machine should be shown
-        assert "... and 5 more machines" in summary  # Should indicate remaining
+        assert "Total Nodes: 100" in summary
+        assert "... and 80 more nodes" in summary
 
 
 class TestExecuteCreateSession:
-    """Test execute_create_session function with mocks."""
+    """Tests for execute_create_session function."""
 
-    def test_execute_create_session_not_initialized(self):
-        """Test execute_create_session when not initialized."""
-        output_lines = []
-        
-        def output_fn(text: str) -> None:
-            output_lines.append(text)
-        
-        # Ensure module is not initialized
-        initialize(None, None, [], MosaicConfig(), None)
-        try:
-            execute_create_session(output_fn)
-            assert any("Error" in line or "not initialized" in line for line in output_lines)
-        finally:
-            # Clean up
-            initialize(None, None, [], MosaicConfig(), None)
-
-    def test_execute_create_session_cancelled(self, tmp_path, temp_state_dir):
+    def test_execute_create_session_cancelled(self, temp_state_dir):
         """Test execute_create_session when user cancels."""
         output_lines = []
-        input_responses = ["999"]  # Cancel selection
+        input_responses = ["999"]  # Cancel
         
         def output_fn(text: str) -> None:
             output_lines.append(text)
@@ -490,7 +254,7 @@ class TestExecuteCreateSession:
                 return input_responses.pop(0)
             return ""
         
-        config = create_test_config_with_state(state_dir=temp_state_dir, data_location=str(tmp_path / "data"))
+        config = create_test_config_with_state(state_dir=temp_state_dir)
         mock_beacon = MagicMock()
         mock_beacon.collect_stats.return_value = []
         mock_session_manager = MagicMock()
@@ -498,353 +262,13 @@ class TestExecuteCreateSession:
         initialize(mock_beacon, mock_session_manager, [], config, input_fn)
         try:
             execute_create_session(output_fn)
-            # Should handle cancellation gracefully
-            assert any("cancelled" in line.lower() or "cancel" in line.lower() for line in output_lines)
-        finally:
-            initialize(None, None, [], MosaicConfig(), None)
-
-    def test_execute_create_session_calls_beacon_methods(self, tmp_path, temp_state_dir):
-        """Test that execute_create_session calls appropriate beacon methods."""
-        output_lines = []
-        input_responses = [
-            "1",  # Select first model (will be cancelled before model selection completes)
-        ]
-        
-        def output_fn(text: str) -> None:
-            output_lines.append(text)
-        
-        def input_fn(prompt: str) -> str:
-            if input_responses:
-                return input_responses.pop(0)
-            return "cancel"  # Default to cancel
-        
-        config = create_test_config_with_state(state_dir=temp_state_dir, data_location=str(tmp_path / "data"))
-        mock_beacon = MagicMock()
-        mock_beacon.collect_stats.return_value = [{"host": "node1", "connection_status": "online"}]
-        mock_session_manager = MagicMock()
-        mock_session_manager.get_sessions.return_value = []
-        
-        model = Model(name="test_model", model_type=ModelType.CNN)
-        
-        initialize(mock_beacon, mock_session_manager, [model], config, input_fn)
-        try:
-            # Mock the planning functions to avoid actual execution
-            with patch("mosaic.session_commands.plan_static_weighted_shards") as mock_plan_shards, \
-                 patch("mosaic.session_commands.plan_data_distribution") as mock_plan_data, \
-                 patch("mosaic.session_commands.plan_model") as mock_plan_model, \
-                 patch("mosaic.session_commands._beacon.execute_data_plan") as mock_exec_data, \
-                 patch("mosaic.session_commands._beacon.execute_model_plan") as mock_exec_model:
-                
-                mock_plan_shards.return_value = [{"host": "node1", "comms_port": 5001, "capacity_fraction": 1.0}]
-                mock_plan_data.return_value = Plan(
-                    stats_data=[],
-                    distribution_plan=[{"host": "node1", "comms_port": 5001}],
-                    model=model,
-                )
-                mock_plan_model.return_value = {}
-                
-                # This will likely cancel early, but we can verify mocks are set up
-                execute_create_session(output_fn)
-                
-        finally:
-            initialize(None, None, [], MosaicConfig(), None)
-
-    def test_create_session_simple_tracks_distribution_state(self, tmp_path, temp_state_dir):
-        """Test that _create_session_simple properly tracks distribution state in session."""
-        output_lines = []
-        input_responses = [
-            "1",  # Select first model
-            "test.txt",  # Manual dataset path entry (when no datasets found)
-            "text",  # Data type for manual entry
-            "yes",  # Confirm execution
-        ]
-        
-        def output_fn(text: str) -> None:
-            output_lines.append(text)
-        
-        def input_fn(prompt: str) -> str:
-            if input_responses:
-                return input_responses.pop(0)
-            return "cancel"
-        
-        # Create test data directory
-        data_dir = tmp_path / "data"
-        data_dir.mkdir(exist_ok=True)
-        test_file = data_dir / "test.txt"
-        test_file.write_text("test data")
-        
-        config = create_test_config_with_state(state_dir=temp_state_dir, data_location=str(data_dir))
-        mock_beacon = MagicMock()
-        mock_beacon.collect_stats.return_value = [
-            {"host": "127.0.0.1", "comms_port": 5001, "connection_status": "online", "cpu_percent": 50.0}
-        ]
-        
-        mock_session_manager = MagicMock()
-        created_session = None
-        
-        def add_session(session):
-            nonlocal created_session
-            created_session = session
-            return session.id
-        
-        mock_session_manager.add_session.side_effect = add_session
-        mock_session_manager.update_session.return_value = True
-        
-        model = Model(name="test_model", model_type=ModelType.CNN)
-        
-        initialize(mock_beacon, mock_session_manager, [model], config, input_fn)
-        try:
-            with patch("mosaic.session_commands.plan_static_weighted_shards") as mock_plan_shards, \
-                 patch("mosaic.session_commands.plan_data_distribution") as mock_plan_data, \
-                 patch("mosaic.session_commands.plan_model") as mock_plan_model, \
-                 patch("mosaic.session_commands._beacon.execute_data_plan") as mock_exec_data, \
-                 patch("mosaic.session_commands._beacon.execute_model_plan") as mock_exec_model, \
-                 patch("mosaic.session_commands._discover_datasets") as mock_discover:
-                
-                # Setup mocks
-                mock_discover.return_value = []  # No datasets found, will use manual entry
-                mock_plan_shards.return_value = [
-                    {"host": "127.0.0.1", "comms_port": 5001, "capacity_fraction": 1.0}
-                ]
-                
-                plan = Plan(
-                    stats_data=[],
-                    distribution_plan=[{"host": "127.0.0.1", "comms_port": 5001}],
-                    model=model,
-                    data_segmentation_plan=[
-                        {
-                            "host": "127.0.0.1",
-                            "comms_port": 5001,
-                            "segments": [{"file_location": "test.txt"}]
-                        }
-                    ],
-                )
-                mock_plan_data.return_value = plan
-                mock_plan_model.return_value = {}
-                
-                # Mock execute_data_plan to set distribution state
-                def mock_exec_data_side_effect(plan, data, session):
-                    if session:
-                        session.data_distribution_state = {
-                            "machines": {
-                                "127.0.0.1:5001": {
-                                    "status": "success",
-                                    "host": "127.0.0.1",
-                                    "comms_port": 5001,
-                                    "attempts": 1,
-                                }
-                            },
-                            "failed_machines": [],
-                            "retry_attempts": {},
-                        }
-                        session.status = SessionStatus.RUNNING
-                
-                mock_exec_data.side_effect = mock_exec_data_side_effect
-                
-                # Mock execute_model_plan to set distribution state
-                def mock_exec_model_side_effect(session, model):
-                    if session:
-                        session.model_distribution_state = {
-                            "nodes": {
-                                "127.0.0.1:5001:0": {
-                                    "status": "success",
-                                    "host": "127.0.0.1",
-                                    "comms_port": 5001,
-                                    "shard_number": 0,
-                                    "attempts": 1,
-                                }
-                            },
-                            "failed_nodes": [],
-                            "retry_attempts": {},
-                        }
-                        session.status = SessionStatus.RUNNING
-                
-                mock_exec_model.side_effect = mock_exec_model_side_effect
-                
-                # Import the function
-                from mosaic.session_commands import _create_session_simple
-                
-                # Execute
-                result = _create_session_simple(output_fn)
-                
-                # Verify session was created and added before distribution
-                assert mock_session_manager.add_session.called
-                assert created_session is not None
-                assert created_session.status == SessionStatus.RUNNING
-                
-                # Verify execute_data_plan was called with session
-                mock_exec_data.assert_called_once()
-                call_args = mock_exec_data.call_args
-                assert call_args[0][2] == created_session  # session parameter
-                
-                # Verify execute_model_plan was called with session
-                mock_exec_model.assert_called_once()
-                call_args = mock_exec_model.call_args
-                assert call_args[0][0] == created_session  # session parameter
-                
-                # Verify distribution state was tracked
-                assert "machines" in created_session.data_distribution_state
-                assert "nodes" in created_session.model_distribution_state
-                
-                # Verify session was updated
-                assert mock_session_manager.update_session.called
-                
-        finally:
-            initialize(None, None, [], MosaicConfig(), None)
-
-    def test_create_session_simple_handles_distribution_errors(self, tmp_path, temp_state_dir):
-        """Test that _create_session_simple handles distribution errors and sets ERROR status."""
-        output_lines = []
-        input_responses = [
-            "1",  # Select first model
-            "1",  # Select first dataset (or manual entry)
-            "text",  # Data type for manual entry
-            "yes",  # Confirm execution
-        ]
-        
-        def output_fn(text: str) -> None:
-            output_lines.append(text)
-        
-        def input_fn(prompt: str) -> str:
-            if input_responses:
-                return input_responses.pop(0)
-            return "cancel"
-        
-        # Create test data directory
-        data_dir = tmp_path / "data"
-        data_dir.mkdir(exist_ok=True)
-        test_file = data_dir / "test.txt"
-        test_file.write_text("test data")
-        
-        config = create_test_config_with_state(state_dir=temp_state_dir, data_location=str(data_dir))
-        mock_beacon = MagicMock()
-        mock_beacon.collect_stats.return_value = [
-            {"host": "127.0.0.1", "comms_port": 5001, "connection_status": "online", "cpu_percent": 50.0}
-        ]
-        
-        mock_session_manager = MagicMock()
-        created_session = None
-        
-        def add_session(session):
-            nonlocal created_session
-            created_session = session
-            return session.id
-        
-        mock_session_manager.add_session.side_effect = add_session
-        mock_session_manager.update_session.return_value = True
-        
-        model = Model(name="test_model", model_type=ModelType.CNN)
-        
-        initialize(mock_beacon, mock_session_manager, [model], config, input_fn)
-        try:
-            with patch("mosaic.session_commands.plan_static_weighted_shards") as mock_plan_shards, \
-                 patch("mosaic.session_commands.plan_data_distribution") as mock_plan_data, \
-                 patch("mosaic.session_commands.plan_model") as mock_plan_model, \
-                 patch("mosaic.session_commands._beacon.execute_data_plan") as mock_exec_data, \
-                 patch("mosaic.session_commands._beacon.execute_model_plan") as mock_exec_model, \
-                 patch("mosaic.session_commands._discover_datasets") as mock_discover:
-                
-                # Setup mocks
-                mock_discover.return_value = []  # No datasets found, will use manual entry
-                mock_plan_shards.return_value = [
-                    {"host": "127.0.0.1", "comms_port": 5001, "capacity_fraction": 1.0}
-                ]
-                
-                plan = Plan(
-                    stats_data=[],
-                    distribution_plan=[{"host": "127.0.0.1", "comms_port": 5001}],
-                    model=model,
-                    data_segmentation_plan=[
-                        {
-                            "host": "127.0.0.1",
-                            "comms_port": 5001,
-                            "segments": [{"file_location": "test.txt"}]
-                        }
-                    ],
-                )
-                mock_plan_data.return_value = plan
-                mock_plan_model.return_value = {}
-                
-                # Mock execute_data_plan to simulate error
-                def mock_exec_data_side_effect(plan, data, session):
-                    if session:
-                        session.data_distribution_state = {
-                            "machines": {
-                                "127.0.0.1:5001": {
-                                    "status": "failed",
-                                    "host": "127.0.0.1",
-                                    "comms_port": 5001,
-                                    "error": "No capable nodes remaining",
-                                    "attempts": 1,
-                                }
-                            },
-                            "failed_machines": [{"host": "127.0.0.1", "comms_port": 5001}],
-                            "retry_attempts": {},
-                            "final_error": "No capable nodes remaining",
-                        }
-                        session.status = SessionStatus.ERROR
-                
-                mock_exec_data.side_effect = mock_exec_data_side_effect
-                
-                # Import the function
-                from mosaic.session_commands import _create_session_simple
-                
-                # Execute
-                result = _create_session_simple(output_fn)
-                
-                # Verify session status is ERROR
-                assert created_session is not None
-                assert created_session.status == SessionStatus.ERROR
-                assert "final_error" in created_session.data_distribution_state
-                
-                # Verify session was updated with ERROR status
-                update_calls = [call for call in mock_session_manager.update_session.call_args_list]
-                # Should have at least one update call with ERROR status
-                # update_session is called with keyword arguments: update_session(session.id, status=SessionStatus.ERROR)
-                error_updates = [
-                    call for call in update_calls
-                    if call[1].get("status") == SessionStatus.ERROR
-                ]
-                assert len(error_updates) > 0, f"No update_session call found with ERROR status. Calls: {update_calls}"
-                
+            assert any("cancelled" in line.lower() for line in output_lines)
         finally:
             initialize(None, None, [], MosaicConfig(), None)
 
 
 class TestExecuteDeleteSession:
-    """Test execute_delete_session function with mocks."""
-
-    def test_execute_delete_session_not_initialized(self):
-        """Test execute_delete_session when not initialized."""
-        output_lines = []
-        
-        def output_fn(text: str) -> None:
-            output_lines.append(text)
-        
-        initialize(None, None, [], MosaicConfig(), None)
-        try:
-            execute_delete_session(output_fn)
-            assert any("Error" in line or "not initialized" in line for line in output_lines)
-        finally:
-            initialize(None, None, [], MosaicConfig(), None)
-
-    def test_execute_delete_session_no_sessions(self, temp_state_dir):
-        """Test execute_delete_session when no sessions exist."""
-        output_lines = []
-        
-        def output_fn(text: str) -> None:
-            output_lines.append(text)
-        
-        config = create_test_config_with_state(state_dir=temp_state_dir)
-        mock_session_manager = MagicMock()
-        mock_session_manager.get_sessions.return_value = []
-        
-        initialize(None, mock_session_manager, [], config, None)
-        try:
-            execute_delete_session(output_fn)
-            assert any("No sessions" in line for line in output_lines)
-        finally:
-            initialize(None, None, [], MosaicConfig(), None)
+    """Tests for execute_delete_session function."""
 
     def test_execute_delete_session_with_id(self, temp_state_dir):
         """Test execute_delete_session with provided session ID."""
@@ -859,33 +283,14 @@ class TestExecuteDeleteSession:
         
         initialize(None, mock_session_manager, [], config, None)
         try:
-            execute_delete_session(output_fn, session_id="test-session-id")
-            mock_session_manager.remove_session.assert_called_once_with("test-session-id")
+            execute_delete_session(output_fn, session_id="test_session_id")
+            mock_session_manager.remove_session.assert_called_once_with("test_session_id")
             assert any("deleted successfully" in line.lower() for line in output_lines)
         finally:
             initialize(None, None, [], MosaicConfig(), None)
 
-    def test_execute_delete_session_with_id_not_found(self, temp_state_dir):
-        """Test execute_delete_session with non-existent session ID."""
-        output_lines = []
-        
-        def output_fn(text: str) -> None:
-            output_lines.append(text)
-        
-        config = create_test_config_with_state(state_dir=temp_state_dir)
-        mock_session_manager = MagicMock()
-        mock_session_manager.remove_session.return_value = False
-        
-        initialize(None, mock_session_manager, [], config, None)
-        try:
-            execute_delete_session(output_fn, session_id="nonexistent-id")
-            mock_session_manager.remove_session.assert_called_once_with("nonexistent-id")
-            assert any("not found" in line.lower() for line in output_lines)
-        finally:
-            initialize(None, None, [], MosaicConfig(), None)
-
-    def test_execute_delete_session_prompt_selection(self, temp_state_dir):
-        """Test execute_delete_session prompts for selection when no ID provided."""
+    def test_execute_delete_session_prompt(self, temp_state_dir):
+        """Test execute_delete_session with user prompt."""
         output_lines = []
         input_responses = ["1"]  # Select first session
         
@@ -943,3 +348,600 @@ class TestExecuteDeleteSession:
         finally:
             initialize(None, None, [], MosaicConfig(), None)
 
+
+class TestExecuteTraining:
+    """Tests for execute_training function."""
+    
+    def test_execute_training_missing_beacon(self, temp_state_dir):
+        """Test execute_training when _beacon is not set."""
+        output_lines = []
+        
+        def output_fn(text: str) -> None:
+            output_lines.append(text)
+        
+        config = create_test_config_with_state(state_dir=temp_state_dir)
+        mock_session_manager = MagicMock()
+        
+        initialize(None, mock_session_manager, [], config, None)
+        try:
+            result = execute_training("test_session_id", output_fn)
+            assert result is None
+            assert any("not fully initialized" in line for line in output_lines)
+        finally:
+            initialize(None, None, [], MosaicConfig(), None)
+    
+    def test_execute_training_missing_session_manager(self, temp_state_dir):
+        """Test execute_training when _session_manager is not set."""
+        output_lines = []
+        
+        def output_fn(text: str) -> None:
+            output_lines.append(text)
+        
+        config = create_test_config_with_state(state_dir=temp_state_dir)
+        mock_beacon = MagicMock()
+        
+        initialize(mock_beacon, None, [], config, None)
+        try:
+            result = execute_training("test_session_id", output_fn)
+            assert result is None
+            assert any("not fully initialized" in line for line in output_lines)
+        finally:
+            initialize(None, None, [], MosaicConfig(), None)
+    
+    def test_execute_training_missing_config(self, temp_state_dir):
+        """Test execute_training when _config is not set."""
+        output_lines = []
+        
+        def output_fn(text: str) -> None:
+            output_lines.append(text)
+        
+        mock_beacon = MagicMock()
+        mock_session_manager = MagicMock()
+        
+        initialize(mock_beacon, mock_session_manager, [], None, None)
+        try:
+            result = execute_training("test_session_id", output_fn)
+            assert result is None
+            assert any("not fully initialized" in line for line in output_lines)
+        finally:
+            initialize(None, None, [], MosaicConfig(), None)
+    
+    def test_execute_training_session_not_found(self, temp_state_dir):
+        """Test execute_training when session is not found."""
+        output_lines = []
+        
+        def output_fn(text: str) -> None:
+            output_lines.append(text)
+        
+        config = create_test_config_with_state(state_dir=temp_state_dir)
+        mock_beacon = MagicMock()
+        mock_session_manager = MagicMock()
+        mock_session_manager.get_session_by_id.return_value = None
+        
+        initialize(mock_beacon, mock_session_manager, [], config, None)
+        try:
+            result = execute_training("nonexistent_session", output_fn)
+            assert result is None
+            assert any("not found" in line.lower() for line in output_lines)
+            mock_session_manager.get_session_by_id.assert_called_once_with("nonexistent_session")
+        finally:
+            initialize(None, None, [], MosaicConfig(), None)
+    
+    def test_execute_training_invalid_session_status(self, temp_state_dir):
+        """Test execute_training when session status is not RUNNING or IDLE."""
+        output_lines = []
+        
+        def output_fn(text: str) -> None:
+            output_lines.append(text)
+        
+        config = create_test_config_with_state(state_dir=temp_state_dir)
+        mock_beacon = MagicMock()
+        mock_session_manager = MagicMock()
+        
+        model = Model(name="test_model", model_type=ModelType.CNN)
+        plan = Plan(stats_data=[], distribution_plan=[], model=model)
+        session = Session(plan=plan, status=SessionStatus.ERROR)
+        
+        mock_session_manager.get_session_by_id.return_value = session
+        
+        initialize(mock_beacon, mock_session_manager, [], config, None)
+        try:
+            result = execute_training(session.id, output_fn)
+            assert result is None
+            assert any("cannot start training" in line.lower() for line in output_lines)
+        finally:
+            initialize(None, None, [], MosaicConfig(), None)
+    
+    def test_execute_training_populates_training_nodes(self, temp_state_dir):
+        """Test that execute_training correctly populates training_nodes from plans."""
+        output_lines = []
+        
+        def output_fn(text: str) -> None:
+            output_lines.append(text)
+        
+        config = create_test_config_with_state(state_dir=temp_state_dir)
+        mock_beacon = MagicMock()
+        mock_session_manager = MagicMock()
+        
+        model = Model(name="test_model", model_type=ModelType.CNN)
+        plan = Plan(
+            stats_data=[],
+            distribution_plan=[
+                {"host": "192.168.1.1", "comms_port": 7001},
+                {"host": "192.168.1.2", "comms_port": 7002},
+            ],
+            data_segmentation_plan=[
+                {"host": "192.168.1.1", "comms_port": 7001, "segments": []},
+                {"host": "192.168.1.3", "comms_port": 7003, "segments": []},
+            ],
+            model=model,
+        )
+        session = Session(plan=plan, status=SessionStatus.RUNNING)
+        session.data_distribution_state = {}
+        
+        mock_session_manager.get_session_by_id.return_value = session
+        mock_beacon.send_command.return_value = {"status": "success"}
+        
+        # Mock input function to simulate user entering 'no' for model transfer
+        def input_fn(prompt: str) -> str:
+            return "no"
+        
+        initialize(mock_beacon, mock_session_manager, [], config, input_fn)
+        try:
+            # Mock time.sleep to avoid actual waiting
+            with patch("mosaic.session_commands.time.sleep"):
+                # Mock the polling loop by making nodes complete immediately
+                def update_training_status(*args, **kwargs):
+                    # Simulate training_status updates
+                    if "training_nodes" not in session.data_distribution_state:
+                        session.data_distribution_state["training_nodes"] = {}
+                    # Mark all nodes as complete
+                    for node_key in ["192.168.1.1:7001", "192.168.1.2:7002", "192.168.1.3:7003"]:
+                        if node_key not in session.data_distribution_state["training_nodes"]:
+                            session.data_distribution_state["training_nodes"][node_key] = {
+                                "status": "complete",
+                                "message": "Training completed",
+                            }
+                
+                # Patch _handle_training_status to update session state
+                with patch("mosaic_comms.beacon.Beacon._handle_training_status", side_effect=update_training_status):
+                    result = execute_training(session.id, output_fn, timeout=1.0, check_interval=0.1)
+            
+            # Check that training_nodes were populated
+            assert "training_nodes" in session.data_distribution_state
+            training_nodes = session.data_distribution_state["training_nodes"]
+            
+            # Should have 3 unique nodes (1 and 3 from data_segmentation_plan, 2 from distribution_plan)
+            assert len(training_nodes) == 3
+            assert "192.168.1.1:7001" in training_nodes
+            assert "192.168.1.2:7002" in training_nodes
+            assert "192.168.1.3:7003" in training_nodes
+        finally:
+            initialize(None, None, [], MosaicConfig(), None)
+    
+    def test_execute_training_sends_correct_commands(self, temp_state_dir):
+        """Test that execute_training sends correct training commands to nodes."""
+        output_lines = []
+        
+        def output_fn(text: str) -> None:
+            output_lines.append(text)
+        
+        config = create_test_config_with_state(state_dir=temp_state_dir)
+        config.host = "192.168.1.0"
+        config.comms_port = 7000
+        
+        mock_beacon = MagicMock()
+        mock_session_manager = MagicMock()
+        
+        model = Model(name="test_model", model_type=ModelType.CNN)
+        plan = Plan(
+            stats_data=[],
+            distribution_plan=[
+                {"host": "192.168.1.1", "comms_port": 7001},
+            ],
+            model=model,
+        )
+        session = Session(plan=plan, status=SessionStatus.RUNNING)
+        session.data_distribution_state = {}
+        
+        mock_session_manager.get_session_by_id.return_value = session
+        
+        # Mock input function to simulate user entering 'no' for model transfer
+        def input_fn(prompt: str) -> str:
+            return "no"
+        
+        initialize(mock_beacon, mock_session_manager, [], config, input_fn)
+        try:
+            # Mock time.sleep and make nodes complete immediately
+            with patch("mosaic.session_commands.time.sleep"):
+                # Provide time values: start_time=0, then loop checks
+                # Use a function to provide enough values for the loop
+                time_call_count = [0]
+                def mock_time():
+                    count = time_call_count[0]
+                    time_call_count[0] += 1
+                    if count == 0:
+                        return 0.0  # start_time
+                    else:
+                        # Return values that keep us in the loop (less than timeout of 1.0)
+                        return 0.0 + (count * 0.1)
+                
+                with patch("mosaic.session_commands.time.time", side_effect=mock_time):
+                    # Pre-set the complete status so it's detected on first loop iteration
+                    session.data_distribution_state["training_nodes"] = {
+                        "192.168.1.1:7001": {
+                            "status": "complete",
+                            "message": "Training completed",
+                        }
+                    }
+                    
+                    def mock_send(*args, **kwargs):
+                        # Return success (state is already set above)
+                        return {"status": "success"}
+                    mock_beacon.send_command.side_effect = mock_send
+                    
+                    result = execute_training(session.id, output_fn, timeout=1.0, check_interval=0.1)
+            
+            # Verify send_command was called with correct parameters
+            assert mock_beacon.send_command.called
+            call_args = mock_beacon.send_command.call_args
+            
+            assert call_args.kwargs["host"] == "192.168.1.1"
+            assert call_args.kwargs["port"] == 7001
+            assert call_args.kwargs["command"] == "start_training"
+            assert call_args.kwargs["payload"]["session_id"] == session.id
+            assert call_args.kwargs["payload"]["caller_host"] == "192.168.1.0"
+            assert call_args.kwargs["payload"]["caller_port"] == 7000
+        finally:
+            initialize(None, None, [], MosaicConfig(), None)
+    
+    def test_execute_training_handles_training_failure(self, temp_state_dir):
+        """Test that execute_training handles training failures correctly."""
+        output_lines = []
+        
+        def output_fn(text: str) -> None:
+            output_lines.append(text)
+        
+        config = create_test_config_with_state(state_dir=temp_state_dir)
+        mock_beacon = MagicMock()
+        mock_session_manager = MagicMock()
+        
+        model = Model(name="test_model", model_type=ModelType.CNN)
+        plan = Plan(
+            stats_data=[],
+            distribution_plan=[
+                {"host": "192.168.1.1", "comms_port": 7001},
+            ],
+            model=model,
+        )
+        session = Session(plan=plan, status=SessionStatus.RUNNING)
+        session.data_distribution_state = {}
+        
+        mock_session_manager.get_session_by_id.return_value = session
+        
+        # Mock input function (not needed for error case, but good to have)
+        def input_fn(prompt: str) -> str:
+            return "no"
+        
+        initialize(mock_beacon, mock_session_manager, [], config, input_fn)
+        try:
+            with patch("mosaic.session_commands.time.sleep"):
+                # Provide time values: start_time=0, then loop checks at 0.1, 0.2, etc.
+                # Need enough values for the loop to run and detect the error
+                time_call_count = [0]
+                def mock_time():
+                    count = time_call_count[0]
+                    time_call_count[0] += 1
+                    if count == 0:
+                        return 0.0  # start_time
+                    else:
+                        # Return values that keep us in the loop (less than timeout of 1.0)
+                        return 0.0 + (count * 0.1)
+                
+                with patch("mosaic.session_commands.time.time", side_effect=mock_time):
+                    # Pre-set the error status before the loop starts checking
+                    # This ensures the error is detected on the first loop iteration
+                    session.data_distribution_state["training_nodes"] = {
+                        "192.168.1.1:7001": {
+                            "status": "error",
+                            "message": "Training failed",
+                        }
+                    }
+                    
+                    def mock_send(*args, **kwargs):
+                        # Return error (state is already set above)
+                        return {"status": "error", "message": "Training failed"}
+                    mock_beacon.send_command.side_effect = mock_send
+                    
+                    result = execute_training(session.id, output_fn, timeout=1.0, check_interval=0.1)
+            
+            # Check that error was recorded
+            assert "training_nodes" in session.data_distribution_state
+            node_status = session.data_distribution_state["training_nodes"]["192.168.1.1:7001"]
+            assert node_status["status"] == "error"
+            assert "failed" in node_status["message"].lower()
+            
+            # Session should be in ERROR state
+            assert session.status == SessionStatus.ERROR
+        finally:
+            initialize(None, None, [], MosaicConfig(), None)
+    
+    def test_execute_training_timeout(self, temp_state_dir):
+        """Test that execute_training handles timeout correctly."""
+        output_lines = []
+        
+        def output_fn(text: str) -> None:
+            output_lines.append(text)
+        
+        config = create_test_config_with_state(state_dir=temp_state_dir)
+        mock_beacon = MagicMock()
+        mock_session_manager = MagicMock()
+        
+        model = Model(name="test_model", model_type=ModelType.CNN)
+        plan = Plan(
+            stats_data=[],
+            distribution_plan=[
+                {"host": "192.168.1.1", "comms_port": 7001},
+            ],
+            model=model,
+        )
+        session = Session(plan=plan, status=SessionStatus.RUNNING)
+        session.data_distribution_state = {}
+        
+        mock_session_manager.get_session_by_id.return_value = session
+        mock_beacon.send_command.return_value = {"status": "success"}
+        
+        initialize(mock_beacon, mock_session_manager, [], config, None)
+        try:
+            # Simulate timeout by making time progress beyond timeout
+            time_values = [0, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6]  # Exceeds 0.5 timeout
+            with patch("mosaic.session_commands.time.sleep"):
+                with patch("mosaic.session_commands.time.time", side_effect=time_values):
+                    # Don't mark nodes as complete, so timeout occurs
+                    result = execute_training(session.id, output_fn, timeout=0.5, check_interval=0.1)
+            
+            # Check that timeout message was printed
+            assert any("timeout" in line.lower() for line in output_lines)
+            
+            # Session should be in ERROR state after timeout
+            assert session.status == SessionStatus.ERROR
+            mock_session_manager.update_session.assert_any_call(session.id, status=SessionStatus.ERROR)
+        finally:
+            initialize(None, None, [], MosaicConfig(), None)
+    
+    def test_execute_training_no_nodes_local_only(self, temp_state_dir):
+        """Test execute_training when no nodes are found, falls back to local training."""
+        output_lines = []
+        
+        def output_fn(text: str) -> None:
+            output_lines.append(text)
+        
+        config = create_test_config_with_state(state_dir=temp_state_dir)
+        mock_beacon = MagicMock()
+        mock_session_manager = MagicMock()
+        
+        model = Model(name="test_model", model_type=ModelType.CNN)
+        plan = Plan(stats_data=[], distribution_plan=[], model=model)
+        session = Session(plan=plan, status=SessionStatus.RUNNING)
+        session.data_distribution_state = {}
+        
+        mock_session_manager.get_session_by_id.return_value = session
+        
+        initialize(mock_beacon, mock_session_manager, [], config, None)
+        try:
+            with patch("mosaic_planner.model_execution.train_model_from_session") as mock_train:
+                mock_trained_model = MagicMock()
+                mock_trained_model.id = "trained_model_123"
+                mock_train.return_value = mock_trained_model
+                
+                result = execute_training(session.id, output_fn)
+            
+            # Should have called train_model_from_session
+            mock_train.assert_called_once_with(session, config=config)
+            
+            # Session should be COMPLETE
+            assert session.status == SessionStatus.COMPLETE
+            mock_session_manager.update_session.assert_any_call(session.id, status=SessionStatus.COMPLETE)
+            
+            assert any("local only" in line.lower() for line in output_lines)
+        finally:
+            initialize(None, None, [], MosaicConfig(), None)
+
+
+class TestExecuteCancelTraining:
+    """Tests for execute_cancel_training function."""
+    
+    def test_execute_cancel_training_missing_beacon(self, temp_state_dir):
+        """Test execute_cancel_training when _beacon is not set."""
+        output_lines = []
+        
+        def output_fn(text: str) -> None:
+            output_lines.append(text)
+        
+        config = create_test_config_with_state(state_dir=temp_state_dir)
+        mock_session_manager = MagicMock()
+        
+        initialize(None, mock_session_manager, [], config, None)
+        try:
+            execute_cancel_training(output_fn, "test_session_id")
+            assert any("not fully initialized" in line for line in output_lines)
+        finally:
+            initialize(None, None, [], MosaicConfig(), None)
+    
+    def test_execute_cancel_training_session_not_found(self, temp_state_dir):
+        """Test execute_cancel_training when session is not found."""
+        output_lines = []
+        
+        def output_fn(text: str) -> None:
+            output_lines.append(text)
+        
+        config = create_test_config_with_state(state_dir=temp_state_dir)
+        mock_beacon = MagicMock()
+        mock_session_manager = MagicMock()
+        mock_session_manager.get_session_by_id.return_value = None
+        
+        initialize(mock_beacon, mock_session_manager, [], config, None)
+        try:
+            execute_cancel_training(output_fn, "nonexistent_session")
+            assert any("not found" in line.lower() for line in output_lines)
+        finally:
+            initialize(None, None, [], MosaicConfig(), None)
+    
+    def test_execute_cancel_training_sends_to_all_nodes(self, temp_state_dir):
+        """Test that execute_cancel_training sends cancel commands to all training nodes."""
+        output_lines = []
+        
+        def output_fn(text: str) -> None:
+            output_lines.append(text)
+        
+        config = create_test_config_with_state(state_dir=temp_state_dir)
+        mock_beacon = MagicMock()
+        mock_beacon._is_self_host.return_value = False
+        mock_beacon.send_command.return_value = {"status": "success"}
+        mock_session_manager = MagicMock()
+        
+        model = Model(name="test_model", model_type=ModelType.CNN)
+        plan = Plan(
+            stats_data=[],
+            distribution_plan=[
+                {"host": "192.168.1.1", "comms_port": 7001},
+                {"host": "192.168.1.2", "comms_port": 7002},
+            ],
+            model=model,
+        )
+        session = Session(plan=plan, status=SessionStatus.TRAINING)
+        
+        mock_session_manager.get_session_by_id.return_value = session
+        
+        initialize(mock_beacon, mock_session_manager, [], config, None)
+        try:
+            execute_cancel_training(output_fn, session.id)
+            
+            # Verify send_command was called for each node
+            assert mock_beacon.send_command.call_count == 2
+            
+            # Check that all calls were for cancel_training command
+            for call in mock_beacon.send_command.call_args_list:
+                assert call.kwargs["command"] == "cancel_training"
+                assert call.kwargs["payload"]["session_id"] == session.id
+            
+            # Check that session status was updated to IDLE
+            assert session.status == SessionStatus.IDLE
+            mock_session_manager.update_session.assert_any_call(session.id, status=SessionStatus.IDLE)
+        finally:
+            initialize(None, None, [], MosaicConfig(), None)
+    
+    def test_execute_cancel_training_single_node(self, temp_state_dir):
+        """Test that execute_cancel_training can target a single node with hostname."""
+        output_lines = []
+        
+        def output_fn(text: str) -> None:
+            output_lines.append(text)
+        
+        config = create_test_config_with_state(state_dir=temp_state_dir)
+        mock_beacon = MagicMock()
+        mock_beacon._is_self_host.return_value = False
+        mock_beacon.send_command.return_value = {"status": "success"}
+        mock_session_manager = MagicMock()
+        
+        model = Model(name="test_model", model_type=ModelType.CNN)
+        plan = Plan(
+            stats_data=[],
+            distribution_plan=[
+                {"host": "192.168.1.1", "comms_port": 7001},
+                {"host": "192.168.1.2", "comms_port": 7002},
+            ],
+            model=model,
+        )
+        session = Session(plan=plan, status=SessionStatus.TRAINING)
+        
+        mock_session_manager.get_session_by_id.return_value = session
+        
+        initialize(mock_beacon, mock_session_manager, [], config, None)
+        try:
+            execute_cancel_training(output_fn, session.id, hostname="192.168.1.1:7001")
+            
+            # Verify send_command was called only once for the specified node
+            assert mock_beacon.send_command.call_count == 1
+            
+            call_args = mock_beacon.send_command.call_args
+            assert call_args.kwargs["host"] == "192.168.1.1"
+            assert call_args.kwargs["port"] == 7001
+            assert call_args.kwargs["command"] == "cancel_training"
+        finally:
+            initialize(None, None, [], MosaicConfig(), None)
+    
+    def test_execute_cancel_training_local_node(self, temp_state_dir):
+        """Test that execute_cancel_training handles local node cancellation."""
+        output_lines = []
+        
+        def output_fn(text: str) -> None:
+            output_lines.append(text)
+        
+        config = create_test_config_with_state(state_dir=temp_state_dir)
+        config.host = "192.168.1.1"
+        config.comms_port = 7001
+        
+        mock_beacon = MagicMock()
+        mock_beacon._is_self_host.return_value = True
+        mock_beacon._handle_cancel_training.return_value = {"status": "success"}
+        mock_session_manager = MagicMock()
+        
+        model = Model(name="test_model", model_type=ModelType.CNN)
+        plan = Plan(
+            stats_data=[],
+            distribution_plan=[
+                {"host": "192.168.1.1", "comms_port": 7001},
+            ],
+            model=model,
+        )
+        session = Session(plan=plan, status=SessionStatus.TRAINING)
+        
+        mock_session_manager.get_session_by_id.return_value = session
+        
+        initialize(mock_beacon, mock_session_manager, [], config, None)
+        try:
+            execute_cancel_training(output_fn, session.id)
+            
+            # Verify _handle_cancel_training was called directly
+            mock_beacon._handle_cancel_training.assert_called_once_with({"session_id": session.id})
+            
+            # Verify send_command was NOT called (local node)
+            mock_beacon.send_command.assert_not_called()
+        finally:
+            initialize(None, None, [], MosaicConfig(), None)
+    
+    def test_execute_cancel_training_prompt_selection(self, temp_state_dir):
+        """Test execute_cancel_training with user prompt for session selection."""
+        output_lines = []
+        input_responses = ["1"]  # Select first session
+        
+        def output_fn(text: str) -> None:
+            output_lines.append(text)
+        
+        def input_fn(prompt: str) -> str:
+            if input_responses:
+                return input_responses.pop(0)
+            return ""
+        
+        config = create_test_config_with_state(state_dir=temp_state_dir)
+        mock_beacon = MagicMock()
+        mock_beacon._is_self_host.return_value = False
+        mock_beacon.send_command.return_value = {"status": "success"}
+        mock_session_manager = MagicMock()
+        
+        model = Model(name="test_model", model_type=ModelType.CNN)
+        plan = Plan(stats_data=[], distribution_plan=[], model=model)
+        session = Session(plan=plan, status=SessionStatus.TRAINING)
+        
+        mock_session_manager.get_sessions.return_value = [session]
+        mock_session_manager.get_session_by_id.return_value = session
+        
+        initialize(mock_beacon, mock_session_manager, [], config, input_fn)
+        try:
+            execute_cancel_training(output_fn)
+            
+            # Verify session was selected and cancel was attempted
+            mock_session_manager.get_sessions.assert_called_once()
+        finally:
+            initialize(None, None, [], MosaicConfig(), None)

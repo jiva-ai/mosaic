@@ -11,9 +11,19 @@ from unittest.mock import MagicMock, Mock, patch
 import pytest
 
 from mosaic_comms.beacon import Beacon
-from mosaic_config.state import ReceiveHeartbeatStatus, SendHeartbeatStatus
+from mosaic_config.state import (
+    ReceiveHeartbeatStatus,
+    SendHeartbeatStatus,
+    Data,
+    FileDefinition,
+    DataType,
+    Model,
+    ModelType,
+    Plan,
+    Session,
+    SessionStatus,
+)
 from mosaic_config.config import MosaicConfig, Peer
-from mosaic_config.state import Data, FileDefinition, DataType, Model, Plan
 from tests.conftest import create_test_config_with_state
 
 
@@ -3476,4 +3486,463 @@ class TestBeaconCollectStats:
                 beacon.execute_model_plan(session, model)
             
             assert "Session plan cannot be None" in str(exc_info.value)
+
+
+class TestHandleStartTraining:
+    """Tests for _handle_start_training command handler."""
+    
+    def test_handle_start_training_invalid_payload_type(self, temp_state_dir):
+        """Test _handle_start_training with invalid payload type."""
+        config = create_test_config_with_state(state_dir=temp_state_dir)
+        beacon = Beacon(config)
+        
+        # Test with non-dict payload
+        result = beacon._handle_start_training("not a dict")
+        assert result is not None
+        assert result.get("status") == "error"
+        assert "must be a dict" in result.get("message", "").lower()
+    
+    def test_handle_start_training_missing_session_id(self, temp_state_dir):
+        """Test _handle_start_training with missing session_id."""
+        config = create_test_config_with_state(state_dir=temp_state_dir)
+        beacon = Beacon(config)
+        
+        payload = {
+            "caller_host": "192.168.1.1",
+            "caller_port": 7001,
+        }
+        
+        result = beacon._handle_start_training(payload)
+        assert result is not None
+        assert result.get("status") == "error"
+        assert "session_id required" in result.get("message", "").lower()
+    
+    def test_handle_start_training_session_manager_not_initialized(self, temp_state_dir):
+        """Test _handle_start_training when session manager is not initialized."""
+        config = create_test_config_with_state(state_dir=temp_state_dir)
+        beacon = Beacon(config)
+        
+        payload = {
+            "session_id": "test_session_id",
+            "caller_host": "192.168.1.1",
+            "caller_port": 7001,
+        }
+        
+        # Patch mosaic.mosaic to have None session manager
+        with patch("mosaic.mosaic._session_manager", None):
+            result = beacon._handle_start_training(payload)
+            assert result is not None
+            assert result.get("status") == "error"
+            assert "session manager not initialized" in result.get("message", "").lower()
+    
+    def test_handle_start_training_session_not_found(self, temp_state_dir):
+        """Test _handle_start_training when session is not found."""
+        config = create_test_config_with_state(state_dir=temp_state_dir)
+        beacon = Beacon(config)
+        
+        payload = {
+            "session_id": "nonexistent_session",
+            "caller_host": "192.168.1.1",
+            "caller_port": 7001,
+        }
+        
+        # Mock session manager
+        mock_session_manager = MagicMock()
+        mock_session_manager.get_session_by_id.return_value = None
+        
+        with patch("mosaic.mosaic._session_manager", mock_session_manager):
+            result = beacon._handle_start_training(payload)
+            assert result is not None
+            assert result.get("status") == "error"
+            assert "not found" in result.get("message", "").lower()
+    
+    def test_handle_start_training_successful_training(self, temp_state_dir):
+        """Test _handle_start_training with successful training."""
+        config = create_test_config_with_state(state_dir=temp_state_dir)
+        config.host = "192.168.1.2"
+        config.comms_port = 7002
+        beacon = Beacon(config)
+        
+        # Create a session with model and data
+        model = Model(name="test_model", model_type=ModelType.CNN, id="model_123")
+        plan = Plan(stats_data=[], distribution_plan=[], model=model)
+        data = Data(file_definitions=[])
+        session = Session(plan=plan, data=data, status=SessionStatus.RUNNING, id="test_session_id")
+        
+        payload = {
+            "session_id": "test_session_id",
+            "caller_host": "192.168.1.1",
+            "caller_port": 7001,
+        }
+        
+        # Mock session manager
+        mock_session_manager = MagicMock()
+        mock_session_manager.get_session_by_id.return_value = session
+        
+        # Mock trained model
+        mock_trained_model = MagicMock()
+        mock_trained_model.id = "trained_model_123"
+        
+        # Mock train_model_from_session
+        with patch("mosaic.mosaic._session_manager", mock_session_manager):
+            with patch("mosaic.mosaic._config", config):
+                with patch("mosaic_planner.model_execution.train_model_from_session") as mock_train:
+                    mock_train.return_value = mock_trained_model
+                    
+                    # Mock send_command to capture status updates
+                    status_updates = []
+                    original_send = beacon.send_command
+                    def mock_send_command(host, port, command, payload=None, timeout=None):
+                        if command == "training_status":
+                            status_updates.append(payload)
+                        return {"status": "acknowledged"}
+                    beacon.send_command = mock_send_command
+                    
+                    try:
+                        result = beacon._handle_start_training(payload)
+                        
+                        # Check that training was called
+                        mock_train.assert_called_once_with(session, config=config)
+                        
+                        # Check that session status was updated
+                        assert session.status == SessionStatus.COMPLETE
+                        mock_session_manager.update_session.assert_any_call(
+                            "test_session_id", status=SessionStatus.COMPLETE
+                        )
+                        
+                        # Check that status updates were sent
+                        assert len(status_updates) >= 2  # At least "starting" and "complete"
+                        
+                        # Check "starting" update
+                        starting_update = next((u for u in status_updates if u.get("status") == "starting"), None)
+                        assert starting_update is not None
+                        assert starting_update.get("session_id") == "test_session_id"
+                        assert starting_update.get("node_key") == "192.168.1.2:7002"
+                        
+                        # Check "complete" update
+                        complete_update = next((u for u in status_updates if u.get("status") == "complete"), None)
+                        assert complete_update is not None
+                        assert complete_update.get("session_id") == "test_session_id"
+                        assert complete_update.get("model_id") == "trained_model_123"
+                        assert complete_update.get("node_key") == "192.168.1.2:7002"
+                        
+                        # Check return value (training now runs in thread, so immediate return is just "started")
+                        assert result is not None
+                        assert result.get("status") == "success"
+                        assert "started" in result.get("message", "").lower()
+                        # model_id is sent via training_status update, not in immediate return
+                    finally:
+                        beacon.send_command = original_send
+    
+    def test_handle_start_training_training_error(self, temp_state_dir):
+        """Test _handle_start_training when training fails."""
+        config = create_test_config_with_state(state_dir=temp_state_dir)
+        config.host = "192.168.1.2"
+        config.comms_port = 7002
+        beacon = Beacon(config)
+        
+        # Create a session with model and data
+        model = Model(name="test_model", model_type=ModelType.CNN, id="model_123")
+        plan = Plan(stats_data=[], distribution_plan=[], model=model)
+        data = Data(file_definitions=[])
+        session = Session(plan=plan, data=data, status=SessionStatus.RUNNING, id="test_session_id")
+        
+        payload = {
+            "session_id": "test_session_id",
+            "caller_host": "192.168.1.1",
+            "caller_port": 7001,
+        }
+        
+        # Mock session manager
+        mock_session_manager = MagicMock()
+        mock_session_manager.get_session_by_id.return_value = session
+        
+        # Mock train_model_from_session to raise an error
+        training_error = Exception("Training failed: out of memory")
+        
+        with patch("mosaic.mosaic._session_manager", mock_session_manager):
+            with patch("mosaic.mosaic._config", config):
+                with patch("mosaic_planner.model_execution.train_model_from_session") as mock_train:
+                    mock_train.side_effect = training_error
+                    
+                    # Mock send_command to capture status updates
+                    status_updates = []
+                    original_send = beacon.send_command
+                    def mock_send_command(host, port, command, payload=None, timeout=None):
+                        if command == "training_status":
+                            status_updates.append(payload)
+                        return {"status": "acknowledged"}
+                    beacon.send_command = mock_send_command
+                    
+                    try:
+                        result = beacon._handle_start_training(payload)
+                        
+                        # Since training runs in a thread, we need to wait for it to complete
+                        import time
+                        max_wait = 5.0
+                        start_time = time.time()
+                        while len(status_updates) < 2 and (time.time() - start_time) < max_wait:
+                            time.sleep(0.1)
+                        
+                        # Check that training was called
+                        mock_train.assert_called_once_with(session, config=config)
+                        
+                        # Check that session status was updated to ERROR
+                        assert session.status == SessionStatus.ERROR
+                        mock_session_manager.update_session.assert_any_call(
+                            "test_session_id", status=SessionStatus.ERROR
+                        )
+                        
+                        # Check that error status update was sent
+                        assert len(status_updates) >= 2  # At least "starting" and "error"
+                        
+                        # Check "error" update
+                        error_update = next((u for u in status_updates if u.get("status") == "error"), None)
+                        assert error_update is not None
+                        assert error_update.get("session_id") == "test_session_id"
+                        assert "out of memory" in error_update.get("message", "").lower()
+                        assert error_update.get("node_key") == "192.168.1.2:7002"
+                        
+                        # Check return value (training now runs in thread, so immediate return is "started")
+                        # Error is sent via training_status update, not in immediate return
+                        assert result is not None
+                        assert result.get("status") == "success"
+                        assert "started" in result.get("message", "").lower()
+                    finally:
+                        beacon.send_command = original_send
+    
+    def test_handle_start_training_with_bytes_payload(self, temp_state_dir):
+        """Test _handle_start_training with bytes payload (pickled)."""
+        import pickle
+        
+        config = create_test_config_with_state(state_dir=temp_state_dir)
+        beacon = Beacon(config)
+        
+        payload_dict = {
+            "session_id": "test_session_id",
+            "caller_host": "192.168.1.1",
+            "caller_port": 7001,
+        }
+        payload_bytes = pickle.dumps(payload_dict)
+        
+        # Mock session manager
+        mock_session_manager = MagicMock()
+        mock_session_manager.get_session_by_id.return_value = None
+        
+        with patch("mosaic.mosaic._session_manager", mock_session_manager):
+            result = beacon._handle_start_training(payload_bytes)
+            # Should deserialize and then fail because session not found
+            assert result is not None
+            assert result.get("status") == "error"
+            assert "not found" in result.get("message", "").lower()
+
+
+class TestHandleCancelTraining:
+    """Tests for _handle_cancel_training command handler."""
+    
+    def test_handle_cancel_training_invalid_payload_type(self, temp_state_dir):
+        """Test _handle_cancel_training with invalid payload type."""
+        config = create_test_config_with_state(state_dir=temp_state_dir)
+        beacon = Beacon(config)
+        
+        result = beacon._handle_cancel_training("not a dict")
+        assert result is not None
+        assert result.get("status") == "error"
+        assert "must be a dict" in result.get("message", "").lower()
+    
+    def test_handle_cancel_training_missing_session_id(self, temp_state_dir):
+        """Test _handle_cancel_training with missing session_id."""
+        config = create_test_config_with_state(state_dir=temp_state_dir)
+        beacon = Beacon(config)
+        
+        payload = {}
+        
+        result = beacon._handle_cancel_training(payload)
+        assert result is not None
+        assert result.get("status") == "error"
+        assert "session_id required" in result.get("message", "").lower()
+    
+    def test_handle_cancel_training_session_not_found(self, temp_state_dir):
+        """Test _handle_cancel_training when session is not found."""
+        config = create_test_config_with_state(state_dir=temp_state_dir)
+        beacon = Beacon(config)
+        
+        payload = {"session_id": "nonexistent_session"}
+        
+        mock_session_manager = MagicMock()
+        mock_session_manager.get_session_by_id.return_value = None
+        
+        with patch("mosaic.mosaic._session_manager", mock_session_manager):
+            result = beacon._handle_cancel_training(payload)
+            assert result is not None
+            assert result.get("status") == "error"
+            assert "not found" in result.get("message", "").lower()
+    
+    def test_handle_cancel_training_no_thread(self, temp_state_dir):
+        """Test _handle_cancel_training when no training thread exists."""
+        config = create_test_config_with_state(state_dir=temp_state_dir)
+        beacon = Beacon(config)
+        
+        model = Model(name="test_model", model_type=ModelType.CNN)
+        plan = Plan(stats_data=[], distribution_plan=[], model=model)
+        session = Session(plan=plan, status=SessionStatus.IDLE, id="test_session_id")
+        
+        payload = {"session_id": "test_session_id"}
+        
+        mock_session_manager = MagicMock()
+        mock_session_manager.get_session_by_id.return_value = session
+        
+        with patch("mosaic.mosaic._session_manager", mock_session_manager):
+            result = beacon._handle_cancel_training(payload)
+            assert result is not None
+            assert result.get("status") == "success"
+            assert "No training thread found" in result.get("message", "")
+            # Session should be set to IDLE
+            assert session.status == SessionStatus.IDLE
+    
+    def test_handle_cancel_training_cancels_thread(self, temp_state_dir):
+        """Test _handle_cancel_training actually cancels the training thread."""
+        import threading
+        import time
+        
+        config = create_test_config_with_state(state_dir=temp_state_dir)
+        beacon = Beacon(config)
+        
+        model = Model(name="test_model", model_type=ModelType.CNN)
+        plan = Plan(stats_data=[], distribution_plan=[], model=model)
+        data = Data(file_definitions=[])
+        session = Session(plan=plan, data=data, status=SessionStatus.TRAINING, id="test_session_id")
+        
+        payload = {"session_id": "test_session_id"}
+        
+        mock_session_manager = MagicMock()
+        mock_session_manager.get_session_by_id.return_value = session
+        
+        # Create a cancellation event
+        cancel_event = threading.Event()
+        beacon._training_cancelled["test_session_id"] = cancel_event
+        
+        # Create a mock training thread that runs for a while
+        training_completed = threading.Event()
+        thread_was_cancelled = threading.Event()
+        
+        def mock_training_worker():
+            """Simulate a long-running training process."""
+            # Check if cancelled
+            if cancel_event.is_set():
+                thread_was_cancelled.set()
+                return
+            
+            # Simulate training work
+            for i in range(100):
+                time.sleep(0.01)  # Small sleep to allow cancellation
+                if cancel_event.is_set():
+                    thread_was_cancelled.set()
+                    return
+            training_completed.set()
+        
+        # Start the training thread
+        training_thread = threading.Thread(target=mock_training_worker, daemon=True)
+        beacon._training_threads["test_session_id"] = training_thread
+        training_thread.start()
+        
+        # Wait a bit to ensure thread started
+        time.sleep(0.05)
+        
+        # Verify thread is running
+        assert training_thread.is_alive()
+        assert "test_session_id" in beacon._training_threads
+        assert "test_session_id" in beacon._training_cancelled
+        
+        with patch("mosaic.mosaic._session_manager", mock_session_manager):
+            with patch("mosaic.mosaic._config", config):
+                # Cancel the training
+                result = beacon._handle_cancel_training(payload)
+                
+                # Wait for thread to detect cancellation
+                thread_was_cancelled.wait(timeout=2.0)
+                
+                # Verify cancellation
+                assert result is not None
+                assert result.get("status") == "success"
+                
+                # Thread should be removed from tracking
+                assert "test_session_id" not in beacon._training_threads
+                assert "test_session_id" not in beacon._training_cancelled
+                
+                # Cancellation event should be set
+                assert cancel_event.is_set()
+                
+                # Thread should detect cancellation and exit
+                assert thread_was_cancelled.is_set()
+                
+                # Training should not have completed
+                assert not training_completed.is_set()
+                
+                # Session should be set to IDLE
+                assert session.status == SessionStatus.IDLE
+                mock_session_manager.update_session.assert_any_call("test_session_id", status=SessionStatus.IDLE)
+        
+        # Wait for thread to finish
+        training_thread.join(timeout=1.0)
+    
+    def test_handle_cancel_training_cleans_up_model_files(self, temp_state_dir):
+        """Test _handle_cancel_training cleans up model files."""
+        # Ensure models_location is set in config
+        models_dir = temp_state_dir / "models"
+        config = create_test_config_with_state(
+            state_dir=temp_state_dir,
+            models_location=str(models_dir),
+        )
+        beacon = Beacon(config)
+        
+        model = Model(name="test_model", model_type=ModelType.CNN, id="model_123")
+        plan = Plan(stats_data=[], distribution_plan=[], model=model)
+        # Ensure session has model_id set (this is what cleanup uses)
+        session = Session(plan=plan, status=SessionStatus.TRAINING, id="test_session_id", model_id="model_123")
+        
+        # Verify session.model_id is set
+        assert session.model_id == "model_123", "Session model_id must be set for cleanup test"
+        
+        payload = {"session_id": "test_session_id"}
+        
+        # Create a dummy model file
+        # Use the same path resolution logic as the cleanup code
+        models_path = Path(config.models_location) if config.models_location else Path("models")
+        if not models_path.is_absolute():
+            models_path = models_path.resolve()
+        models_path.mkdir(parents=True, exist_ok=True)
+        model_file = models_path / "model_123_trained.onnx"
+        model_file.write_text("dummy model content")
+        
+        # Verify file exists before cleanup
+        assert model_file.exists(), f"Model file should exist before cleanup at {model_file}"
+        assert models_path.exists(), f"Models path should exist: {models_path}"
+        
+        mock_session_manager = MagicMock()
+        mock_session_manager.get_session_by_id.return_value = session
+        
+        with patch("mosaic.mosaic._session_manager", mock_session_manager):
+            with patch("mosaic.mosaic._config", config):
+                # Verify config is set correctly
+                assert config.models_location == str(models_dir)
+                
+                # Store model_id before cleanup (it gets cleared)
+                original_model_id = session.model_id
+                
+                result = beacon._handle_cancel_training(payload)
+                
+                assert result is not None
+                assert result.get("status") == "success"
+                
+                # Model file should be deleted
+                # The cleanup code should have found and deleted the file
+                assert not model_file.exists(), (
+                    f"Model file {model_file} should be deleted but still exists. "
+                    f"Models path: {models_path}, Model ID: {original_model_id}"
+                )
+                
+                # Session model_id should be cleared
+                assert session.model_id is None
+                mock_session_manager.update_session.assert_any_call("test_session_id", model_id=None)
 

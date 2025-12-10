@@ -111,6 +111,8 @@ Available commands:
   calcd [method]         - Calculate distribution (method: weighted_shard or weighted_batches)
   create_session         - Create a new session (interactive Q&A)
   delete_session [id]    - Delete a session (prompts if id not provided)
+  train_session [id]     - Train a model using a session (prompts if id not provided)
+  cancel_training [id] [hostname] - Cancel training for a session (prompts if id not provided, optional hostname for single node)
   help                   - Show this help message
   exit/quit/q            - Exit the REPL
 """
@@ -149,6 +151,15 @@ def process_command(command: str, output_fn: Callable[[str], None]) -> None:
             from mosaic.session_commands import execute_delete_session
             session_id = args[0] if args else None
             execute_delete_session(output_fn, session_id)
+        elif cmd == "train_session" or cmd == "train-session":
+            from mosaic.session_commands import execute_train_session
+            session_id = args[0] if args else None
+            execute_train_session(output_fn, session_id)
+        elif cmd == "cancel_training" or cmd == "cancel-training":
+            from mosaic.session_commands import execute_cancel_training
+            session_id = args[0] if args else None
+            hostname = args[1] if len(args) > 1 else None
+            execute_cancel_training(output_fn, session_id, hostname)
         elif cmd == "help":
             execute_help(output_fn)
         else:

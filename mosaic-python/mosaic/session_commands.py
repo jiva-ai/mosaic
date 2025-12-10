@@ -104,7 +104,7 @@ def _discover_datasets(data_location: str, max_depth: int = 2) -> List[Dict[str,
             elif item.is_file():
                 # Single file dataset
                 ext = item.suffix.lower()
-                if ext in [".csv", ".txt", ".jsonl"]:
+                if ext in [".csv", ".txt", ".jsonl", ".wav", ".flac"]:
                     datasets.append({
                         "name": item.name,
                         "path": str(item.relative_to(data_path)),
@@ -260,7 +260,7 @@ def _create_session_simple(output_fn: Callable[[str], None]) -> Optional[Session
         
         # Get model selection
         selection = _input_fn("\nEnter model number: ").strip()
-        if not selection or selection == str(cancel_idx):
+        if not selection or selection == str(cancel_idx) or selection == "999":
             output_fn("Session creation cancelled.\n")
             return None
         
@@ -553,6 +553,14 @@ def _create_session_simple(output_fn: Callable[[str], None]) -> Optional[Session
         output_fn(f"Status: {session.status.value}\n")
         output_fn("=" * 60 + "\n\n")
         
+        # Ask if user wants to train
+        train_now = _input_fn("Do you want to train the model with this session? (yes/no): ").strip().lower()
+        if train_now in ['yes', 'y']:
+            output_fn("\nStarting training...\n")
+            execute_training(session.id, output_fn)
+        else:
+            output_fn("Training skipped. You can start training later with 'train_session' command.\n")
+        
         return session
         
     except KeyboardInterrupt:
@@ -640,4 +648,504 @@ def execute_delete_session(output_fn: Callable[[str], None], session_id: Optiona
         output_fn(f"\nSession {session_id} deleted successfully.\n")
     else:
         output_fn(f"\nSession {session_id} not found.\n")
+
+
+def execute_training(
+    session_id: str,
+    output_fn: Callable[[str], None],
+    timeout: Optional[float] = None,
+    check_interval: Optional[float] = None,
+) -> Optional[Session]:
+    """
+    Execute training for a session.
+    
+    Sets session status to TRAINING, sends training commands to all participating nodes,
+    tracks training progress, and optionally transfers trained models back to caller.
+    
+    Args:
+        session_id: ID of the session to train
+        output_fn: Function to call with output text
+        timeout: Optional timeout in seconds (default: 3600)
+        check_interval: Optional check interval in seconds (default: 2)
+    
+    Returns:
+        Session object if successful, None otherwise
+    """
+    if _beacon is None or _session_manager is None or _config is None:
+        output_fn("Error: System not fully initialized\n")
+        return None
+    
+    # Get the session
+    session = _session_manager.get_session_by_id(session_id)
+    if session is None:
+        output_fn(f"Error: Session {session_id} not found\n")
+        return None
+    
+    # Check if session is ready for training
+    if session.status not in [SessionStatus.RUNNING, SessionStatus.IDLE]:
+        output_fn(f"Error: Session status is {session.status.value}, cannot start training. Session must be RUNNING or IDLE.\n")
+        return None
+    
+    # Set status to TRAINING
+    session.status = SessionStatus.TRAINING
+    _session_manager.update_session(session_id, status=SessionStatus.TRAINING)
+    
+    output_fn("\n" + "=" * 60 + "\n")
+    output_fn("Starting Model Training\n")
+    output_fn("=" * 60 + "\n\n")
+    
+    # Initialize training state tracking
+    if "training_nodes" not in session.data_distribution_state:
+        session.data_distribution_state["training_nodes"] = {}
+    
+    # Get all nodes that received data/model shards
+    # These are the nodes that should participate in training
+    training_nodes = []
+    
+    # Get nodes from data distribution plan
+    if session.plan and session.plan.data_segmentation_plan:
+        for machine_plan in session.plan.data_segmentation_plan:
+            host = machine_plan.get("host")
+            comms_port = machine_plan.get("comms_port")
+            if host and comms_port:
+                node_key = f"{host}:{comms_port}"
+                training_nodes.append({
+                    "host": host,
+                    "comms_port": comms_port,
+                    "node_key": node_key,
+                })
+    
+    # Also check model distribution plan
+    if session.plan and session.plan.distribution_plan:
+        for node_plan in session.plan.distribution_plan:
+            host = node_plan.get("host")
+            comms_port = node_plan.get("comms_port")
+            if host and comms_port:
+                node_key = f"{host}:{comms_port}"
+                # Avoid duplicates
+                if not any(n["node_key"] == node_key for n in training_nodes):
+                    training_nodes.append({
+                        "host": host,
+                        "comms_port": comms_port,
+                        "node_key": node_key,
+                    })
+    
+    if not training_nodes:
+        output_fn("Warning: No nodes found in distribution plan. Training locally only.\n")
+        # Train locally
+        try:
+            from mosaic_planner.model_execution import train_model_from_session
+            trained_model = train_model_from_session(session, config=_config)
+            session.status = SessionStatus.COMPLETE
+            _session_manager.update_session(session_id, status=SessionStatus.COMPLETE)
+            output_fn("✓ Training completed successfully (local only).\n")
+            return session
+        except Exception as e:
+            output_fn(f"✗ Training failed: {e}\n")
+            logger.error(f"Training failed: {e}", exc_info=True)
+            session.status = SessionStatus.ERROR
+            _session_manager.update_session(session_id, status=SessionStatus.ERROR)
+            return session
+    
+    output_fn(f"Sending training commands to {len(training_nodes)} node(s)...\n")
+    
+    # Send training commands to all nodes
+    caller_host = _config.host
+    caller_port = _config.comms_port
+    
+    for node in training_nodes:
+        host = node["host"]
+        comms_port = node["comms_port"]
+        node_key = node["node_key"]
+        
+        # Send training command to all nodes (including local) via TCP
+        # This ensures training runs in a separate thread and doesn't block the REPL
+        output_fn(f"Sending training command to {host}:{comms_port}...\n")
+        try:
+            result = _beacon.send_command(
+                host=host,
+                port=comms_port,
+                command="start_training",
+                payload={
+                    "session_id": session_id,
+                    "caller_host": caller_host,
+                    "caller_port": caller_port,
+                },
+                timeout=300.0,  # Longer timeout for training
+            )
+            
+            if result and result.get("status") == "success":
+                # Node acknowledged, will send status updates
+                session.data_distribution_state["training_nodes"][node_key] = {
+                    "status": "starting",
+                    "message": "Training command sent",
+                }
+                output_fn(f"✓ Training command sent to {host}:{comms_port}\n")
+            else:
+                error_msg = result.get("message", "Unknown error") if result else "No response"
+                session.data_distribution_state["training_nodes"][node_key] = {
+                    "status": "error",
+                    "message": error_msg,
+                }
+                output_fn(f"✗ Failed to send training command to {host}:{comms_port}: {error_msg}\n")
+        except Exception as e:
+            error_msg = str(e)
+            session.data_distribution_state["training_nodes"][node_key] = {
+                "status": "error",
+                "message": error_msg,
+            }
+            output_fn(f"✗ Error sending training command to {host}:{comms_port}: {error_msg}\n")
+    
+    # Wait for training to complete (with timeout)
+    output_fn("\nWaiting for training to complete...\n")
+    import time
+    start_time = time.time()
+    if timeout is None:
+        timeout = 3600  # 1 hour timeout
+    if check_interval is None:
+        check_interval = 2  # Check every 2 seconds
+    
+    while time.time() - start_time < timeout:
+        # Check status of all nodes
+        all_complete = True
+        any_error = False
+        
+        for node_key, node_status in session.data_distribution_state["training_nodes"].items():
+            status = node_status.get("status")
+            if status == "error":
+                any_error = True
+                all_complete = False  # Errors mean not all complete
+            elif status != "complete":
+                all_complete = False
+        
+        if all_complete:
+            session.status = SessionStatus.COMPLETE
+            _session_manager.update_session(session_id, status=SessionStatus.COMPLETE)
+            output_fn("\n✓ All training completed successfully!\n")
+            break
+        elif any_error:
+            # Check if all nodes are done (complete or error)
+            all_done = all(
+                node_status.get("status") in ["complete", "error"]
+                for node_status in session.data_distribution_state["training_nodes"].values()
+            )
+            if all_done:
+                session.status = SessionStatus.ERROR
+                _session_manager.update_session(session_id, status=SessionStatus.ERROR)
+                output_fn("\n✗ Training completed with errors.\n")
+                break
+        
+        time.sleep(check_interval)
+        # Show progress
+        complete_count = sum(1 for n in session.data_distribution_state["training_nodes"].values() if n.get("status") == "complete")
+        total_count = len(session.data_distribution_state["training_nodes"])
+        output_fn(f"Progress: {complete_count}/{total_count} nodes completed...\r")
+    
+    else:
+        # Timeout
+        output_fn("\n⚠ Training timeout reached. Some nodes may still be training.\n")
+        session.status = SessionStatus.ERROR
+        _session_manager.update_session(session_id, status=SessionStatus.ERROR)
+    
+    # Show final status
+    output_fn("\n" + "-" * 60 + "\n")
+    output_fn("Training Status Summary:\n")
+    output_fn("-" * 60 + "\n")
+    for node_key, node_status in session.data_distribution_state["training_nodes"].items():
+        status = node_status.get("status", "unknown")
+        message = node_status.get("message", "")
+        output_fn(f"  {node_key}: {status} - {message}\n")
+    
+    # Ask if user wants to transfer models back
+    if session.status == SessionStatus.COMPLETE:
+        transfer_models = _input_fn("\nTransfer all trained model segments back to this node for local storage? (yes/no): ").strip().lower()
+        if transfer_models in ['yes', 'y']:
+            output_fn("\nTransferring models...\n")
+            _transfer_trained_models_back(session, output_fn)
+        else:
+            output_fn("Model transfer skipped.\n")
+    
+    return session
+
+
+def _transfer_trained_models_back(session: Session, output_fn: Callable[[str], None]) -> None:
+    """
+    Transfer all trained model segments back to the caller node for local storage.
+    
+    Args:
+        session: Session object
+        output_fn: Function to call with output text
+    """
+    if _beacon is None or _config is None:
+        output_fn("Error: System not fully initialized\n")
+        return
+    
+    # Get all nodes that completed training
+    completed_nodes = [
+        (node_key, node_status)
+        for node_key, node_status in session.data_distribution_state.get("training_nodes", {}).items()
+        if node_status.get("status") == "complete"
+    ]
+    
+    if not completed_nodes:
+        output_fn("No completed training nodes to transfer models from.\n")
+        return
+    
+    output_fn(f"Transferring models from {len(completed_nodes)} node(s)...\n")
+    
+    # For each node, request the trained model
+    # This would require implementing a "get_trained_model" command
+    # For now, we'll just log that this needs to be implemented
+    output_fn("Note: Model transfer functionality needs to be implemented.\n")
+    output_fn("Trained models remain on remote nodes.\n")
+    logger.warning("Model transfer back to caller not yet implemented")
+
+
+def execute_train_session(output_fn: Callable[[str], None], session_id: Optional[str] = None) -> None:
+    """
+    Execute train_session command.
+    
+    Args:
+        output_fn: Function to call with output text
+        session_id: Optional session ID to train (if not provided, will prompt)
+    """
+    if _session_manager is None:
+        output_fn("Error: Session manager not initialized\n")
+        return
+    
+    if session_id is None:
+        # List sessions and let user choose
+        sessions = _session_manager.get_sessions()
+        if not sessions:
+            output_fn("No sessions available to train.\n")
+            return
+        
+        output_fn("\n" + "=" * 60 + "\n")
+        output_fn("Train Session\n")
+        output_fn("=" * 60 + "\n\n")
+        output_fn("Available Sessions:\n")
+        output_fn("-" * 60 + "\n")
+        for i, session in enumerate(sessions):
+            status = session.status.value if isinstance(session.status, SessionStatus) else str(session.status)
+            model_id = session.model_id or "No model"
+            output_fn(f"  {i+1}. {session.id[:8]}... - Status: {status}, Model: {model_id[:20]}...\n")
+        
+        cancel_idx = len(sessions) + 1
+        output_fn(f"\n  {cancel_idx}. Cancel\n")
+        
+        try:
+            selection = _input_fn("\nEnter session number to train: ").strip()
+            if not selection or selection == str(cancel_idx):
+                output_fn("Training cancelled.\n")
+                return
+            
+            idx = int(selection) - 1
+            if idx < 0 or idx >= len(sessions):
+                output_fn("Invalid selection.\n")
+                return
+            
+            session_id = sessions[idx].id
+        except (ValueError, IndexError) as e:
+            output_fn(f"Invalid selection: {e}\n")
+            return
+        except KeyboardInterrupt:
+            output_fn("\nTraining cancelled.\n")
+            return
+    
+    # Execute training
+    execute_training(session_id, output_fn)
+
+
+def execute_cancel_training(output_fn: Callable[[str], None], session_id: Optional[str] = None, hostname: Optional[str] = None) -> None:
+    """
+    Execute cancel_training command.
+    
+    Cancels training for a session by sending cancel commands to all training nodes,
+    or optionally to a single node if hostname is provided.
+    
+    Args:
+        output_fn: Function to call with output text
+        session_id: Optional session ID to cancel (if not provided, will prompt)
+        hostname: Optional hostname to cancel training on a single node (format: "host:port")
+    """
+    if _beacon is None or _session_manager is None or _config is None:
+        output_fn("Error: System not fully initialized\n")
+        return
+    
+    if session_id is None:
+        # List sessions and let user choose
+        sessions = _session_manager.get_sessions()
+        if not sessions:
+            output_fn("No sessions available.\n")
+            return
+        
+        output_fn("\n" + "=" * 60 + "\n")
+        output_fn("Cancel Training\n")
+        output_fn("=" * 60 + "\n\n")
+        output_fn("Available Sessions:\n")
+        output_fn("-" * 60 + "\n")
+        for i, session in enumerate(sessions):
+            status = session.status.value if isinstance(session.status, SessionStatus) else str(session.status)
+            model_id = session.model_id or "No model"
+            output_fn(f"  {i+1}. {session.id[:8]}... - Status: {status}, Model: {model_id[:20]}...\n")
+        
+        cancel_idx = len(sessions) + 1
+        output_fn(f"\n  {cancel_idx}. Cancel\n")
+        
+        try:
+            selection = _input_fn("\nEnter session number to cancel training: ").strip()
+            if not selection or selection == str(cancel_idx):
+                output_fn("Cancellation cancelled.\n")
+                return
+            
+            idx = int(selection) - 1
+            if idx < 0 or idx >= len(sessions):
+                output_fn("Invalid selection.\n")
+                return
+            
+            session_id = sessions[idx].id
+        except (ValueError, IndexError) as e:
+            output_fn(f"Invalid selection: {e}\n")
+            return
+        except KeyboardInterrupt:
+            output_fn("\nCancellation cancelled.\n")
+            return
+    
+    # Get the session
+    session = _session_manager.get_session_by_id(session_id)
+    if session is None:
+        output_fn(f"Error: Session {session_id} not found\n")
+        return
+    
+    # Get training nodes from session
+    training_nodes = []
+    
+    # Get nodes from data distribution plan
+    if session.plan and session.plan.data_segmentation_plan:
+        for machine_plan in session.plan.data_segmentation_plan:
+            host = machine_plan.get("host")
+            comms_port = machine_plan.get("comms_port")
+            if host and comms_port:
+                node_key = f"{host}:{comms_port}"
+                training_nodes.append({
+                    "host": host,
+                    "comms_port": comms_port,
+                    "node_key": node_key,
+                })
+    
+    # Also check model distribution plan
+    if session.plan and session.plan.distribution_plan:
+        for node_plan in session.plan.distribution_plan:
+            host = node_plan.get("host")
+            comms_port = node_plan.get("comms_port")
+            if host and comms_port:
+                node_key = f"{host}:{comms_port}"
+                # Avoid duplicates
+                if not any(n["node_key"] == node_key for n in training_nodes):
+                    training_nodes.append({
+                        "host": host,
+                        "comms_port": comms_port,
+                        "node_key": node_key,
+                    })
+    
+    # Filter to single node if hostname provided
+    if hostname:
+        # Parse hostname (format: "host:port")
+        try:
+            if ":" in hostname:
+                host, port_str = hostname.rsplit(":", 1)
+                port = int(port_str)
+            else:
+                host = hostname
+                port = None
+            
+            filtered_nodes = []
+            for node in training_nodes:
+                if node["host"] == host and (port is None or node["comms_port"] == port):
+                    filtered_nodes.append(node)
+            
+            if not filtered_nodes:
+                output_fn(f"Error: No training node found matching {hostname}\n")
+                return
+            
+            training_nodes = filtered_nodes
+        except ValueError:
+            output_fn(f"Error: Invalid hostname format. Expected 'host:port' or 'host'\n")
+            return
+    
+    if not training_nodes:
+        output_fn("Warning: No training nodes found for this session.\n")
+        # Still try to cancel locally if it's a local session
+        if _beacon._is_self_host(_config.host, _config.comms_port):
+            try:
+                result = _beacon._handle_cancel_training({"session_id": session_id})
+                if result and result.get("status") == "success":
+                    output_fn("✓ Training cancelled locally.\n")
+                else:
+                    output_fn(f"✗ Failed to cancel training locally: {result.get('message', 'Unknown error')}\n")
+            except Exception as e:
+                output_fn(f"✗ Error cancelling training locally: {e}\n")
+        return
+    
+    output_fn(f"Sending cancel commands to {len(training_nodes)} node(s)...\n")
+    
+    # Send cancel commands to all nodes
+    successful = 0
+    failed = 0
+    
+    for node in training_nodes:
+        host = node["host"]
+        comms_port = node["comms_port"]
+        node_key = node["node_key"]
+        
+        # Check if this is the local node
+        if _beacon._is_self_host(host, comms_port):
+            # Cancel locally
+            output_fn(f"Cancelling training locally ({host}:{comms_port})...\n")
+            try:
+                result = _beacon._handle_cancel_training({"session_id": session_id})
+                if result and result.get("status") == "success":
+                    output_fn(f"✓ Training cancelled locally.\n")
+                    successful += 1
+                else:
+                    error_msg = result.get("message", "Unknown error") if result else "No response"
+                    output_fn(f"✗ Failed to cancel training locally: {error_msg}\n")
+                    failed += 1
+            except Exception as e:
+                error_msg = str(e)
+                output_fn(f"✗ Error cancelling training locally: {error_msg}\n")
+                failed += 1
+        else:
+            # Send cancel command to remote node
+            output_fn(f"Sending cancel command to {host}:{comms_port}...\n")
+            try:
+                result = _beacon.send_command(
+                    host=host,
+                    port=comms_port,
+                    command="cancel_training",
+                    payload={"session_id": session_id},
+                    timeout=30.0,
+                )
+                
+                if result and result.get("status") == "success":
+                    output_fn(f"✓ Cancel command sent to {host}:{comms_port}\n")
+                    successful += 1
+                else:
+                    error_msg = result.get("message", "Unknown error") if result else "No response"
+                    output_fn(f"✗ Failed to send cancel command to {host}:{comms_port}: {error_msg}\n")
+                    failed += 1
+            except Exception as e:
+                error_msg = str(e)
+                output_fn(f"✗ Error sending cancel command to {host}:{comms_port}: {error_msg}\n")
+                failed += 1
+    
+    # Update session status based on results
+    if failed == 0:
+        session.status = SessionStatus.IDLE
+        _session_manager.update_session(session_id, status=SessionStatus.IDLE)
+        output_fn(f"\n✓ Training cancelled successfully on all {successful} node(s).\n")
+    else:
+        session.status = SessionStatus.ERROR
+        _session_manager.update_session(session_id, status=SessionStatus.ERROR)
+        output_fn(f"\n⚠ Training cancellation completed with errors: {successful} succeeded, {failed} failed.\n")
 
