@@ -52,7 +52,9 @@ class TestSerializeDeserializePlanWithData:
         
         # Verify plan
         assert deserialized_plan.id == plan.id
-        assert deserialized_plan.model.name == plan.model.name
+        # Model objects are not persisted - only model_id is saved
+        assert deserialized_plan.model_id == plan.model_id
+        assert deserialized_plan.model_id == model.id
         assert len(deserialized_plan.stats_data) == len(plan.stats_data)
         assert len(deserialized_plan.distribution_plan) == len(plan.distribution_plan)
         
@@ -90,7 +92,9 @@ class TestSerializeDeserializePlanWithData:
         
         # Verify plan
         assert deserialized_plan.id == plan.id
-        assert deserialized_plan.model.name == plan.model.name
+        # Model objects are not persisted - only model_id is saved
+        assert deserialized_plan.model_id == plan.model_id
+        assert deserialized_plan.model_id == model.id
         
         # Verify data
         assert len(deserialized_data.file_definitions) == 1
