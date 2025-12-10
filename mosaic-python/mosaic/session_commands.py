@@ -29,6 +29,8 @@ _session_manager: Optional[Any] = None
 _models: List[Model] = []
 _config: Optional[MosaicConfig] = None
 _input_fn: Optional[Callable[[str], str]] = None  # Function to get user input
+_current_session_id: Optional[str] = None  # Currently active session for inference
+_infer_method: str = "fedavg"  # Default inference aggregation method
 
 
 def initialize(
@@ -735,9 +737,34 @@ def execute_training(
         # Train locally
         try:
             from mosaic_planner.model_execution import train_model_from_session
-            trained_model = train_model_from_session(session, config=_config)
+            training_result = train_model_from_session(session, config=_config)
+            
+            # Handle both old (just model) and new (model, stats) return formats
+            if isinstance(training_result, tuple) and len(training_result) == 2:
+                trained_model, training_stats = training_result
+            else:
+                # Legacy format - just model
+                trained_model = training_result
+                training_stats = {}
+            
+            # Store training stats in session
+            if "training_stats" not in session.data_distribution_state:
+                session.data_distribution_state["training_stats"] = {}
+            # Use "local" as the node key for local training
+            session.data_distribution_state["training_stats"]["local"] = training_stats
+            
+            # Also store in training_nodes for consistency
+            if "training_nodes" not in session.data_distribution_state:
+                session.data_distribution_state["training_nodes"] = {}
+            session.data_distribution_state["training_nodes"]["local"] = {
+                "status": "complete",
+                "message": "Training completed successfully",
+                "model_id": trained_model.id if hasattr(trained_model, 'id') else None,
+                "training_stats": training_stats,
+            }
+            
             session.status = SessionStatus.COMPLETE
-            _session_manager.update_session(session_id, status=SessionStatus.COMPLETE)
+            _session_manager.update_session(session_id, status=SessionStatus.COMPLETE, data_distribution_state=session.data_distribution_state)
             output_fn("✓ Training completed successfully (local only).\n")
             return session
         except Exception as e:
@@ -1192,4 +1219,530 @@ def execute_cancel_training(output_fn: Callable[[str], None], session_id: Option
         session.status = SessionStatus.ERROR
         _session_manager.update_session(session_id, status=SessionStatus.ERROR)
         output_fn(f"\n⚠ Training cancellation completed with errors: {successful} succeeded, {failed} failed.\n")
+
+
+def execute_use_session(output_fn: Callable[[str], None], session_id: Optional[str] = None) -> None:
+    """
+    Execute 'use <session>' command - set the active session for inference.
+    
+    Args:
+        output_fn: Function to call with output text
+        session_id: Optional session ID (prompts if not provided)
+    """
+    global _current_session_id
+    
+    if _session_manager is None:
+        output_fn("Error: Session manager not initialized\n")
+        return
+    
+    # Prompt for session ID if not provided
+    if session_id is None:
+        # List available sessions
+        sessions = _session_manager.get_all_sessions()
+        if not sessions:
+            output_fn("No sessions available. Create a session first.\n")
+            return
+        
+        output_fn("\nAvailable sessions:\n")
+        for sess in sessions:
+            status_str = sess.status.value if hasattr(sess.status, 'value') else str(sess.status)
+            output_fn(f"  {sess.id} - Status: {status_str}\n")
+        
+        session_id = _input_fn("Enter session ID: ").strip()
+        if not session_id:
+            output_fn("No session ID provided.\n")
+            return
+    
+    # Verify session exists
+    session = _session_manager.get_session_by_id(session_id)
+    if session is None:
+        output_fn(f"Error: Session {session_id} not found\n")
+        return
+    
+    # Set as current session
+    _current_session_id = session_id
+    status_str = session.status.value if hasattr(session.status, 'value') else str(session.status)
+    output_fn(f"\n✓ Using session {session_id} (Status: {status_str})\n")
+    output_fn(f"Session model: {session.model_id if session.model_id else 'No model'}\n")
+    if session.data:
+        data_types = [fd.data_type.value for fd in session.data.file_definitions] if session.data.file_definitions else []
+        if data_types:
+            output_fn(f"Data types: {', '.join(set(data_types))}\n")
+
+
+def execute_set_infer_method(output_fn: Callable[[str], None], method: Optional[str] = None) -> None:
+    """
+    Execute 'set_infer_method <method>' command - set the inference aggregation method.
+    
+    Args:
+        output_fn: Function to call with output text
+        method: Optional method name (prompts if not provided)
+    """
+    global _infer_method
+    
+    from mosaic.inference_aggregation import list_aggregation_methods, get_aggregation_method
+    
+    # List available methods if no method provided
+    if method is None:
+        available_methods = list_aggregation_methods()
+        output_fn("\nAvailable inference aggregation methods:\n")
+        for m in available_methods:
+            marker = " (current)" if m == _infer_method else ""
+            output_fn(f"  {m}{marker}\n")
+        
+        method = _input_fn("Enter method name: ").strip()
+        if not method:
+            output_fn("No method provided.\n")
+            return
+    
+    # Validate method
+    try:
+        get_aggregation_method(method)
+        _infer_method = method.lower()
+        output_fn(f"\n✓ Inference method set to: {_infer_method}\n")
+    except ValueError as e:
+        output_fn(f"Error: {e}\n")
+
+
+def execute_infer(output_fn: Callable[[str], None], input_data: Optional[str] = None) -> None:
+    """
+    Execute 'infer <input>' command - run inference on the current session.
+    
+    Args:
+        output_fn: Function to call with output text
+        input_data: Optional input data (shows advice if not provided)
+    """
+    global _current_session_id, _infer_method
+    
+    if _beacon is None or _session_manager is None or _config is None:
+        output_fn("Error: System not fully initialized\n")
+        return
+    
+    # Check if session is set
+    if _current_session_id is None:
+        output_fn("Error: No session in use. Use 'use <session>' to set a session first.\n")
+        return
+    
+    # Get the session
+    session = _session_manager.get_session_by_id(_current_session_id)
+    if session is None:
+        output_fn(f"Error: Session {_current_session_id} not found\n")
+        _current_session_id = None
+        return
+    
+    # Get model and data type for advice
+    model = session.model
+    model_type = model.model_type if model else None
+    data_type = None
+    if session.data and session.data.file_definitions:
+        data_type = session.data.file_definitions[0].data_type
+    
+    # If no input provided, show advice
+    if input_data is None or input_data.strip() == "":
+        from mosaic.inference_advice import get_inference_advice
+        advice = get_inference_advice(model_type, data_type)
+        output_fn("\n" + "=" * 60 + "\n")
+        output_fn("Inference Input Required\n")
+        output_fn("=" * 60 + "\n\n")
+        output_fn(advice + "\n\n")
+        output_fn("=" * 60 + "\n")
+        # Note: In a real REPL, we'd pre-populate "infer " here, but that's handled by the REPL UI
+        return
+    
+    # Set status to INFERRING
+    session.status = SessionStatus.INFERRING
+    _session_manager.update_session(_current_session_id, status=SessionStatus.INFERRING)
+    
+    output_fn("\n" + "=" * 60 + "\n")
+    output_fn("Running Federated Inference\n")
+    output_fn("=" * 60 + "\n\n")
+    
+    start_time = time.time()
+    
+    # Get all nodes that have models for this session
+    inference_nodes = []
+    
+    # Get nodes from data distribution plan
+    if session.plan and session.plan.data_segmentation_plan:
+        for machine_plan in session.plan.data_segmentation_plan:
+            host = machine_plan.get("host")
+            comms_port = machine_plan.get("comms_port")
+            if host and comms_port:
+                node_key = f"{host}:{comms_port}"
+                inference_nodes.append({
+                    "host": host,
+                    "comms_port": comms_port,
+                    "node_key": node_key,
+                })
+    
+    # Also check model distribution plan
+    if session.plan and session.plan.distribution_plan:
+        for node_plan in session.plan.distribution_plan:
+            host = node_plan.get("host")
+            comms_port = node_plan.get("comms_port")
+            if host and comms_port:
+                node_key = f"{host}:{comms_port}"
+                # Avoid duplicates
+                if not any(n["node_key"] == node_key for n in inference_nodes):
+                    inference_nodes.append({
+                        "host": host,
+                        "comms_port": comms_port,
+                        "node_key": node_key,
+                    })
+    
+    if not inference_nodes:
+        output_fn("Warning: No nodes found in distribution plan. Running inference locally only.\n")
+        # Run inference locally
+        try:
+            result = _run_local_inference(session, input_data, output_fn)
+            if result is not None:
+                _handle_inference_result(result, session, output_fn, start_time, 1, [])
+            else:
+                output_fn("✗ Inference failed locally\n")
+                session.status = SessionStatus.ERROR
+                _session_manager.update_session(_current_session_id, status=SessionStatus.ERROR)
+        except Exception as e:
+            output_fn(f"✗ Error during local inference: {e}\n")
+            logger.error(f"Inference error: {e}", exc_info=True)
+            session.status = SessionStatus.ERROR
+            _session_manager.update_session(_current_session_id, status=SessionStatus.ERROR)
+        return
+    
+    # Send inference commands to all nodes
+    predictions = []
+    node_weights = []
+    successful_nodes = []
+    failed_nodes = []
+    warnings = []
+    
+    output_fn(f"Sending inference requests to {len(inference_nodes)} node(s)...\n\n")
+    
+    for node in inference_nodes:
+        host = node["host"]
+        comms_port = node["comms_port"]
+        node_key = node["node_key"]
+        
+        output_fn(f"Requesting inference from {host}:{comms_port}...\n")
+        try:
+            result = _beacon.send_command(
+                host=host,
+                port=comms_port,
+                command="run_inference",
+                payload={
+                    "session_id": _current_session_id,
+                    "input_data": input_data,
+                },
+                timeout=60.0,  # Timeout for inference
+            )
+            
+            if result and result.get("status") == "success":
+                prediction = result.get("prediction")
+                if prediction is not None:
+                    import numpy as np
+                    # Convert prediction to numpy array if it's a list
+                    if isinstance(prediction, list):
+                        prediction = np.array(prediction)
+                    predictions.append(prediction)
+                    # Use uniform weights for now (could be based on node reliability, data size, etc.)
+                    node_weights.append(1.0)
+                    successful_nodes.append(node_key)
+                    output_fn(f"✓ Received prediction from {host}:{comms_port}\n")
+                else:
+                    warnings.append(f"Node {host}:{comms_port} returned success but no prediction")
+                    failed_nodes.append(node_key)
+                    output_fn(f"⚠ No prediction from {host}:{comms_port}\n")
+            else:
+                error_msg = result.get("message", "Unknown error") if result else "No response"
+                warnings.append(f"Node {host}:{comms_port}: {error_msg}")
+                failed_nodes.append(node_key)
+                output_fn(f"✗ Failed to get prediction from {host}:{comms_port}: {error_msg}\n")
+        except Exception as e:
+            error_msg = str(e)
+            warnings.append(f"Node {host}:{comms_port}: {error_msg}")
+            failed_nodes.append(node_key)
+            output_fn(f"✗ Error requesting inference from {host}:{comms_port}: {error_msg}\n")
+    
+    # Aggregate predictions
+    if not predictions:
+        output_fn("\n✗ No predictions received from any node. Inference failed.\n")
+        session.status = SessionStatus.ERROR
+        _session_manager.update_session(_current_session_id, status=SessionStatus.ERROR)
+        return
+    
+    output_fn(f"\nAggregating {len(predictions)} prediction(s) using {_infer_method}...\n")
+    
+    try:
+        from mosaic.inference_aggregation import get_aggregation_method
+        aggregate_func = get_aggregation_method(_infer_method)
+        
+        # Aggregate predictions
+        if _infer_method in ["fedavg", "fedprox", "weighted_average"]:
+            aggregated_result = aggregate_func(predictions, node_weights if _infer_method != "fedprox" else None)
+        else:
+            aggregated_result = aggregate_func(predictions)
+        
+        # Handle result based on data type
+        _handle_inference_result(
+            aggregated_result,
+            session,
+            output_fn,
+            start_time,
+            len(successful_nodes),
+            warnings,
+        )
+        
+        session.status = SessionStatus.COMPLETE
+        _session_manager.update_session(_current_session_id, status=SessionStatus.COMPLETE)
+        
+    except Exception as e:
+        output_fn(f"\n✗ Error aggregating predictions: {e}\n")
+        logger.error(f"Aggregation error: {e}", exc_info=True)
+        session.status = SessionStatus.ERROR
+        _session_manager.update_session(_current_session_id, status=SessionStatus.ERROR)
+
+
+def _run_local_inference(
+    session: Session,
+    input_data: str,
+    output_fn: Callable[[str], None],
+) -> Optional[Any]:
+    """
+    Run inference locally on this node.
+    
+    Args:
+        session: Session instance
+        input_data: Input data string (file path or data)
+        output_fn: Function to call with output text
+        
+    Returns:
+        Prediction result or None if error
+    """
+    try:
+        import onnxruntime as ort
+        import numpy as np
+        from pathlib import Path
+        from mosaic_planner.model_planner import _load_onnx_model
+        
+        # Get model
+        model = session.model
+        if model is None:
+            output_fn("Error: No model found in session\n")
+            return None
+        
+        # Load ONNX model
+        onnx_model = _load_onnx_model(model, _config)
+        
+        # Create ONNX Runtime inference session
+        model_bytes = onnx_model.SerializeToString()
+        session_ort = ort.InferenceSession(model_bytes, providers=['CPUExecutionProvider'])
+        
+        # Get input name and shape
+        input_name = session_ort.get_inputs()[0].name
+        input_shape = session_ort.get_inputs()[0].shape
+        
+        # Parse input data
+        input_tensor = _parse_inference_input(input_data, input_shape, session, output_fn)
+        if input_tensor is None:
+            return None
+        
+        # Run inference
+        outputs = session_ort.run(None, {input_name: input_tensor})
+        prediction = outputs[0]  # Get first output
+        
+        return prediction
+        
+    except ImportError:
+        output_fn("Error: onnxruntime not installed. Install with: pip install onnxruntime\n")
+        return None
+    except Exception as e:
+        output_fn(f"Error during local inference: {e}\n")
+        logger.error(f"Local inference error: {e}", exc_info=True)
+        return None
+
+
+def _parse_inference_input(
+    input_data: str,
+    input_shape: List[Any],
+    session: Session,
+    output_fn: Callable[[str], None],
+) -> Optional[Any]:
+    """
+    Parse inference input data into a numpy array.
+    
+    Args:
+        input_data: Input data string (file path or data)
+        input_shape: Expected input shape
+        session: Session instance
+        output_fn: Function to call with output text
+        
+    Returns:
+        Numpy array or None if error
+    """
+    import numpy as np
+    from pathlib import Path
+    
+    # Check if it's a file path
+    input_path = Path(input_data)
+    if input_path.exists() and input_path.is_file():
+        # Load from file based on data type
+        if session.data and session.data.file_definitions:
+            data_type = session.data.file_definitions[0].data_type
+            # For now, use a simple approach - load as image/audio/text based on extension
+            # In a full implementation, this would use proper loaders
+            try:
+                if data_type == DataType.IMAGE:
+                    from PIL import Image
+                    img = Image.open(input_path)
+                    img = img.convert('RGB')
+                    # Resize if needed (simplified)
+                    import torchvision.transforms as transforms
+                    transform = transforms.Compose([
+                        transforms.Resize((224, 224)),
+                        transforms.ToTensor(),
+                    ])
+                    tensor = transform(img)
+                    return tensor.numpy()
+                elif data_type == DataType.AUDIO:
+                    # Would use librosa or similar
+                    output_fn("Error: Audio file loading not yet implemented\n")
+                    return None
+                elif data_type == DataType.TEXT:
+                    with open(input_path, 'r', encoding='utf-8') as f:
+                        text = f.read()
+                    # Would tokenize here
+                    output_fn("Error: Text file loading not yet fully implemented\n")
+                    return None
+                else:
+                    output_fn(f"Error: File loading for {data_type} not yet implemented\n")
+                    return None
+            except Exception as e:
+                output_fn(f"Error loading file: {e}\n")
+                return None
+        else:
+            output_fn("Error: Cannot determine data type for file input\n")
+            return None
+    else:
+        # Try to parse as array/data
+        # For now, return a dummy input based on shape
+        # In a full implementation, this would parse the input string properly
+        output_fn("Error: Direct data input parsing not yet fully implemented. Please provide a file path.\n")
+        return None
+
+
+def _handle_inference_result(
+    result: Any,
+    session: Session,
+    output_fn: Callable[[str], None],
+    start_time: float,
+    num_nodes: int,
+    warnings: List[str],
+) -> None:
+    """
+    Handle inference result - save to file or display in REPL based on data type.
+    
+    Args:
+        result: Aggregated prediction result
+        session: Session instance
+        output_fn: Function to call with output text
+        start_time: Start time of inference
+        num_nodes: Number of nodes that participated
+        warnings: List of warning messages
+    """
+    import numpy as np
+    from pathlib import Path
+    
+    response_time = time.time() - start_time
+    
+    # Determine output format based on data type
+    output_to_file = False
+    if session.data and session.data.file_definitions:
+        data_type = session.data.file_definitions[0].data_type
+        # Some data types typically output to file (images, audio, etc.)
+        output_to_file = data_type in [DataType.IMAGE, DataType.AUDIO, DataType.DIR]
+    
+    if output_to_file:
+        # Save to file
+        data_location = Path(_config.data_location) if _config.data_location else Path("data")
+        data_location.mkdir(parents=True, exist_ok=True)
+        
+        # Generate filename
+        timestamp = int(time.time())
+        if session.data.file_definitions[0].data_type == DataType.IMAGE:
+            filename = f"inference_result_{timestamp}.png"
+        elif session.data.file_definitions[0].data_type == DataType.AUDIO:
+            filename = f"inference_result_{timestamp}.wav"
+        else:
+            filename = f"inference_result_{timestamp}.bin"
+        
+        output_path = data_location / filename
+        
+        # Save result
+        try:
+            if isinstance(result, np.ndarray):
+                if session.data.file_definitions[0].data_type == DataType.IMAGE:
+                    # Convert to image and save
+                    from PIL import Image
+                    # Assuming result is in [C, H, W] or [H, W, C] format
+                    if len(result.shape) == 3:
+                        if result.shape[0] == 3:  # [C, H, W]
+                            result_img = np.transpose(result, (1, 2, 0))
+                        else:
+                            result_img = result
+                        # Normalize to [0, 255]
+                        result_img = (result_img - result_img.min()) / (result_img.max() - result_img.min() + 1e-8) * 255
+                        result_img = result_img.astype(np.uint8)
+                        img = Image.fromarray(result_img)
+                        img.save(output_path)
+                    else:
+                        # Save as numpy array
+                        np.save(output_path, result)
+                else:
+                    # Save as numpy array
+                    np.save(output_path, result)
+            else:
+                # Save as pickle
+                import pickle
+                with open(output_path, 'wb') as f:
+                    pickle.dump(result, f)
+            
+            output_fn("\n" + "=" * 60 + "\n")
+            output_fn("Inference Complete\n")
+            output_fn("=" * 60 + "\n\n")
+            output_fn(f"✓ Result saved to: {output_path}\n")
+            output_fn(f"Nodes participated: {num_nodes}\n")
+            output_fn(f"Response time: {response_time:.2f} seconds\n")
+            if warnings:
+                output_fn(f"Warnings: {len(warnings)}\n")
+                for warning in warnings:
+                    output_fn(f"  - {warning}\n")
+            output_fn("\n")
+        except Exception as e:
+            output_fn(f"\n✗ Error saving result to file: {e}\n")
+            logger.error(f"Save error: {e}", exc_info=True)
+    else:
+        # Display in REPL
+        output_fn("\n" + "=" * 60 + "\n")
+        output_fn("Inference Result\n")
+        output_fn("=" * 60 + "\n\n")
+        
+        # Format result for display
+        if isinstance(result, np.ndarray):
+            if result.size <= 100:  # Small arrays - show full
+                output_fn(f"Prediction:\n{result}\n\n")
+            else:  # Large arrays - show summary
+                output_fn(f"Prediction shape: {result.shape}\n")
+                output_fn(f"Prediction dtype: {result.dtype}\n")
+                output_fn(f"Min: {result.min()}, Max: {result.max()}, Mean: {result.mean()}\n")
+                if result.size <= 1000:  # Medium arrays - show sample
+                    output_fn(f"First 10 values: {result.flatten()[:10]}\n")
+        else:
+            output_fn(f"Prediction: {result}\n\n")
+        
+        output_fn(f"Nodes participated: {num_nodes}\n")
+        output_fn(f"Response time: {response_time:.2f} seconds\n")
+        if warnings:
+            output_fn(f"Warnings: {len(warnings)}\n")
+            for warning in warnings:
+                output_fn(f"  - {warning}\n")
+        output_fn("\n")
 

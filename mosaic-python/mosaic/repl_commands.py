@@ -113,6 +113,9 @@ Available commands:
   delete_session [id]    - Delete a session (prompts if id not provided)
   train_session [id]     - Train a model using a session (prompts if id not provided)
   cancel_training [id] [hostname] - Cancel training for a session (prompts if id not provided, optional hostname for single node)
+  use [session_id]       - Set active session for inference (prompts if id not provided)
+  infer [input]          - Run federated inference on current session (shows advice if input not provided)
+  set_infer_method [method] - Set inference aggregation method (fedavg, fedprox, majority_vote, etc.)
   help                   - Show this help message
   exit/quit/q            - Exit the REPL
 """
@@ -160,6 +163,18 @@ def process_command(command: str, output_fn: Callable[[str], None]) -> None:
             session_id = args[0] if args else None
             hostname = args[1] if len(args) > 1 else None
             execute_cancel_training(output_fn, session_id, hostname)
+        elif cmd == "use":
+            from mosaic.session_commands import execute_use_session
+            session_id = args[0] if args else None
+            execute_use_session(output_fn, session_id)
+        elif cmd == "infer":
+            from mosaic.session_commands import execute_infer
+            input_data = " ".join(args) if args else None
+            execute_infer(output_fn, input_data)
+        elif cmd == "set_infer_method" or cmd == "set-infer-method":
+            from mosaic.session_commands import execute_set_infer_method
+            method = args[0] if args else None
+            execute_set_infer_method(output_fn, method)
         elif cmd == "help":
             execute_help(output_fn)
         else:

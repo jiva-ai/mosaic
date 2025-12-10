@@ -87,6 +87,7 @@ class Beacon:
         self.register("start_training", self._handle_start_training)
         self.register("training_status", self._handle_training_status)
         self.register("cancel_training", self._handle_cancel_training)
+        self.register("run_inference", self._handle_run_inference)
 
         # Thread control
         self._stop_event = threading.Event()
@@ -2780,5 +2781,77 @@ class Beacon:
                             mosaic_module._session_manager.update_session(session_id, status=SessionStatus.ERROR)
             except Exception:
                 pass
+            return {"status": "error", "message": str(e)}
+    
+    def _handle_run_inference(self, payload: Union[Dict[str, Any], bytes]) -> Optional[Dict[str, Any]]:
+        """
+        Handle run_inference command from caller node.
+        
+        Runs inference on this node's model for the specified session.
+        
+        Args:
+            payload: Dict with session_id and input_data
+            
+        Returns:
+            Dictionary with status and prediction
+        """
+        try:
+            if isinstance(payload, bytes):
+                import pickle
+                payload = pickle.loads(payload)
+            
+            if not isinstance(payload, dict):
+                logger.error("run_inference payload must be a dict")
+                return {"status": "error", "message": "Payload must be a dict"}
+            
+            session_id = payload.get("session_id")
+            input_data = payload.get("input_data")
+            
+            if not session_id:
+                logger.error("run_inference payload missing session_id")
+                return {"status": "error", "message": "session_id required"}
+            
+            if not input_data:
+                logger.error("run_inference payload missing input_data")
+                return {"status": "error", "message": "input_data required"}
+            
+            # Import here to avoid circular imports
+            import mosaic.mosaic as mosaic_module
+            from mosaic_config.state import SessionStatus
+            from mosaic.session_commands import _run_local_inference
+            
+            # Get the session
+            if mosaic_module._session_manager is None:
+                logger.error("Session manager not initialized")
+                return {"status": "error", "message": "Session manager not initialized"}
+            
+            session = mosaic_module._session_manager.get_session_by_id(session_id)
+            if session is None:
+                logger.error(f"Session {session_id} not found")
+                return {"status": "error", "message": f"Session {session_id} not found"}
+            
+            # Run inference locally
+            # Create a dummy output function for logging
+            def dummy_output_fn(msg: str) -> None:
+                logger.debug(f"Inference output: {msg}")
+            
+            prediction = _run_local_inference(session, input_data, dummy_output_fn)
+            
+            if prediction is None:
+                return {"status": "error", "message": "Inference failed"}
+            
+            # Convert numpy array to list for JSON serialization
+            import numpy as np
+            if isinstance(prediction, np.ndarray):
+                prediction = prediction.tolist()
+            
+            logger.info(f"Inference completed for session {session_id}")
+            return {
+                "status": "success",
+                "prediction": prediction,
+            }
+                
+        except Exception as e:
+            logger.error(f"Error handling run_inference: {e}")
             return {"status": "error", "message": str(e)}
 

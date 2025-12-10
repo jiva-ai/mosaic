@@ -3564,9 +3564,14 @@ class TestHandleStartTraining:
         beacon = Beacon(config)
         
         # Create a session with model and data
-        model = Model(name="test_model", model_type=ModelType.CNN, id="model_123")
+        # Add binary_rep to model to avoid loading errors (even though we mock train_model_from_session)
+        test_binary = b"fake_onnx_model_data"
+        model = Model(name="test_model", model_type=ModelType.CNN, id="model_123", binary_rep=test_binary)
         plan = Plan(stats_data=[], distribution_plan=[], model=model)
-        data = Data(file_definitions=[])
+        # Create data with at least one file definition to avoid validation errors
+        # (even though we mock train_model_from_session, it might do some validation)
+        file_def = FileDefinition(location="test", data_type=DataType.IMAGE)
+        data = Data(file_definitions=[file_def])
         session = Session(plan=plan, data=data, status=SessionStatus.RUNNING, id="test_session_id")
         
         payload = {
@@ -3583,12 +3588,16 @@ class TestHandleStartTraining:
         mock_trained_model = MagicMock()
         mock_trained_model.id = "trained_model_123"
         
-        # Mock train_model_from_session
+        # Mock train_model_from_session - patch before calling _handle_start_training
+        # Since it's imported inside the function, we need to patch the module
+        # The import happens at function level, so we patch the module it's imported from
         with patch("mosaic.mosaic._session_manager", mock_session_manager):
             with patch("mosaic.mosaic._config", config):
-                    with patch("mosaic_planner.model_execution.train_model_from_session") as mock_train:
-                        # train_model_from_session now returns (model, stats) tuple
-                        mock_train.return_value = (mock_trained_model, {"epochs": 1, "final_loss": 0.5, "training_time_seconds": 10.0})
+                # Patch the module where train_model_from_session is defined
+                # This needs to be patched before the import happens in the thread
+                with patch("mosaic_planner.model_execution.train_model_from_session") as mock_train:
+                    # train_model_from_session now returns (model, stats) tuple
+                    mock_train.return_value = (mock_trained_model, {"epochs": 1, "final_loss": 0.5, "training_time_seconds": 10.0})
                     
                     # Mock send_command to capture status updates
                     status_updates = []
@@ -3600,9 +3609,60 @@ class TestHandleStartTraining:
                     beacon.send_command = mock_send_command
                     
                     try:
+                        # The import happens inside _handle_start_training at function level
+                        # So the patch should be active when the import happens
+                        # But the thread runs asynchronously, so we need to ensure the patch stays active
                         result = beacon._handle_start_training(payload)
                         
+                        # Wait for training thread to complete (with timeout)
+                        import time
+                        import threading
+                        max_wait = 5.0  # 5 seconds max wait
+                        
+                        # Wait for thread to be created (it's created immediately)
+                        # But it might complete/fail very quickly, so check immediately
+                        training_thread = None
+                        start_wait = time.time()
+                        while "test_session_id" not in beacon._training_threads:
+                            if time.time() - start_wait > 0.1:  # Quick timeout for thread creation
+                                break
+                            time.sleep(0.01)
+                        
+                        if "test_session_id" in beacon._training_threads:
+                            training_thread = beacon._training_threads["test_session_id"]
+                            # Wait for thread to complete
+                            training_thread.join(timeout=max_wait)
+                        else:
+                            # Thread might have already completed and been cleaned up
+                            # Wait a bit to see if it was just very fast
+                            time.sleep(0.2)
+                        
+                        # Wait a bit more for status updates to be sent and for any async operations
+                        time.sleep(0.5)
+                        
                         # Check that training was called
+                        # The import happens when _handle_start_training is called, so the patch should be active
+                        # If not called, the thread might have failed or the import didn't use the patch
+                        if not mock_train.called:
+                            # The thread might have failed before calling train_model_from_session
+                            # Check if there was an exception by looking at session status
+                            # The thread removes itself from _training_threads in finally block
+                            # So if it's not there, it either completed or failed
+                            thread_was_created = training_thread is not None
+                            thread_alive = training_thread.is_alive() if training_thread else False
+                            # Check if there's an error message in the session or status updates
+                            error_in_updates = any(u.get("status") == "error" for u in status_updates)
+                            error_messages = [u.get("message", "") for u in status_updates if u.get("status") == "error"]
+                            assert False, (
+                                f"train_model_from_session not called. "
+                                f"Thread was created: {thread_was_created}, "
+                                f"Thread alive: {thread_alive}, "
+                                f"Session status: {session.status}, "
+                                f"Error in status updates: {error_in_updates}, "
+                                f"Error messages: {error_messages}, "
+                                f"Status updates: {status_updates}, "
+                                f"Mock call count: {mock_train.call_count}"
+                            )
                         mock_train.assert_called_once_with(session, config=config)
                         
                         # Check that session status was updated
@@ -3950,3 +4010,224 @@ class TestHandleCancelTraining:
                 assert session.model_id is None
                 mock_session_manager.update_session.assert_any_call("test_session_id", model_id=None)
 
+
+class TestHandleRunInference:
+    """Tests for _handle_run_inference command handler."""
+    
+    def test_handle_run_inference_invalid_payload_type(self, temp_state_dir):
+        """Test _handle_run_inference with invalid payload type."""
+        config = create_test_config_with_state(state_dir=temp_state_dir)
+        beacon = Beacon(config)
+        
+        # Test with non-dict payload
+        result = beacon._handle_run_inference("not a dict")
+        assert result is not None
+        assert result.get("status") == "error"
+        assert "must be a dict" in result.get("message", "").lower()
+    
+    def test_handle_run_inference_missing_session_id(self, temp_state_dir):
+        """Test _handle_run_inference with missing session_id."""
+        config = create_test_config_with_state(state_dir=temp_state_dir)
+        beacon = Beacon(config)
+        
+        payload = {
+            "input_data": "/path/to/input",
+        }
+        
+        result = beacon._handle_run_inference(payload)
+        assert result is not None
+        assert result.get("status") == "error"
+        assert "session_id required" in result.get("message", "").lower()
+    
+    def test_handle_run_inference_missing_input_data(self, temp_state_dir):
+        """Test _handle_run_inference with missing input_data."""
+        config = create_test_config_with_state(state_dir=temp_state_dir)
+        beacon = Beacon(config)
+        
+        payload = {
+            "session_id": "test_session_id",
+        }
+        
+        result = beacon._handle_run_inference(payload)
+        assert result is not None
+        assert result.get("status") == "error"
+        assert "input_data required" in result.get("message", "").lower()
+    
+    def test_handle_run_inference_session_manager_not_initialized(self, temp_state_dir):
+        """Test _handle_run_inference when session manager is not initialized."""
+        config = create_test_config_with_state(state_dir=temp_state_dir)
+        beacon = Beacon(config)
+        
+        payload = {
+            "session_id": "test_session_id",
+            "input_data": "/path/to/input",
+        }
+        
+        # Patch mosaic.mosaic to have None session manager
+        with patch("mosaic.mosaic._session_manager", None):
+            result = beacon._handle_run_inference(payload)
+            assert result is not None
+            assert result.get("status") == "error"
+            assert "session manager not initialized" in result.get("message", "").lower()
+    
+    def test_handle_run_inference_session_not_found(self, temp_state_dir):
+        """Test _handle_run_inference when session is not found."""
+        config = create_test_config_with_state(state_dir=temp_state_dir)
+        beacon = Beacon(config)
+        
+        payload = {
+            "session_id": "nonexistent_session",
+            "input_data": "/path/to/input",
+        }
+        
+        # Mock session manager
+        mock_session_manager = MagicMock()
+        mock_session_manager.get_session_by_id.return_value = None
+        
+        with patch("mosaic.mosaic._session_manager", mock_session_manager):
+            result = beacon._handle_run_inference(payload)
+            assert result is not None
+            assert result.get("status") == "error"
+            assert "not found" in result.get("message", "").lower()
+    
+    def test_handle_run_inference_successful(self, temp_state_dir):
+        """Test _handle_run_inference with successful inference."""
+        import numpy as np
+        
+        config = create_test_config_with_state(state_dir=temp_state_dir)
+        beacon = Beacon(config)
+        
+        # Create a session with model
+        model = Model(name="test_model", model_type=ModelType.CNN, id="model_123")
+        plan = Plan(stats_data=[], distribution_plan=[], model=model)
+        file_def = FileDefinition(location="test", data_type=DataType.IMAGE)
+        data = Data(file_definitions=[file_def])
+        session = Session(plan=plan, data=data, status=SessionStatus.COMPLETE, id="test_session_id")
+        session.model = model
+        
+        payload = {
+            "session_id": "test_session_id",
+            "input_data": "/path/to/input.jpg",
+        }
+        
+        # Mock session manager
+        mock_session_manager = MagicMock()
+        mock_session_manager.get_session_by_id.return_value = session
+        
+        # Mock _run_local_inference to return a prediction
+        mock_prediction = np.array([0.1, 0.2, 0.3, 0.4])
+        
+        with patch("mosaic.mosaic._session_manager", mock_session_manager):
+            with patch("mosaic.session_commands._run_local_inference") as mock_infer:
+                mock_infer.return_value = mock_prediction
+                
+                result = beacon._handle_run_inference(payload)
+                
+                assert result is not None
+                assert result.get("status") == "success"
+                assert "prediction" in result
+                
+                # Verify prediction is converted to list
+                prediction = result.get("prediction")
+                assert isinstance(prediction, list)
+                assert len(prediction) == 4
+                
+                # Verify _run_local_inference was called with correct args
+                mock_infer.assert_called_once()
+                call_args = mock_infer.call_args
+                assert call_args[0][0] == session
+                assert call_args[0][1] == "/path/to/input.jpg"
+    
+    def test_handle_run_inference_inference_fails(self, temp_state_dir):
+        """Test _handle_run_inference when inference fails."""
+        config = create_test_config_with_state(state_dir=temp_state_dir)
+        beacon = Beacon(config)
+        
+        # Create a session with model
+        model = Model(name="test_model", model_type=ModelType.CNN, id="model_123")
+        plan = Plan(stats_data=[], distribution_plan=[], model=model)
+        file_def = FileDefinition(location="test", data_type=DataType.IMAGE)
+        data = Data(file_definitions=[file_def])
+        session = Session(plan=plan, data=data, status=SessionStatus.COMPLETE, id="test_session_id")
+        session.model = model
+        
+        payload = {
+            "session_id": "test_session_id",
+            "input_data": "/path/to/input.jpg",
+        }
+        
+        # Mock session manager
+        mock_session_manager = MagicMock()
+        mock_session_manager.get_session_by_id.return_value = session
+        
+        # Mock _run_local_inference to return None (failure)
+        with patch("mosaic.mosaic._session_manager", mock_session_manager):
+            with patch("mosaic.session_commands._run_local_inference") as mock_infer:
+                mock_infer.return_value = None
+                
+                result = beacon._handle_run_inference(payload)
+                
+                assert result is not None
+                assert result.get("status") == "error"
+                assert "failed" in result.get("message", "").lower()
+    
+    def test_handle_run_inference_with_bytes_payload(self, temp_state_dir):
+        """Test _handle_run_inference with bytes payload (pickled)."""
+        config = create_test_config_with_state(state_dir=temp_state_dir)
+        beacon = Beacon(config)
+        
+        # Create a session with model
+        model = Model(name="test_model", model_type=ModelType.CNN, id="model_123")
+        plan = Plan(stats_data=[], distribution_plan=[], model=model)
+        file_def = FileDefinition(location="test", data_type=DataType.IMAGE)
+        data = Data(file_definitions=[file_def])
+        session = Session(plan=plan, data=data, status=SessionStatus.COMPLETE, id="test_session_id")
+        session.model = model
+        
+        payload = {
+            "session_id": "test_session_id",
+            "input_data": "/path/to/input.jpg",
+        }
+        
+        # Pickle the payload
+        import pickle
+        payload_bytes = pickle.dumps(payload)
+        
+        # Mock session manager
+        mock_session_manager = MagicMock()
+        mock_session_manager.get_session_by_id.return_value = session
+        
+        # Mock _run_local_inference
+        import numpy as np
+        mock_prediction = np.array([0.5, 0.3, 0.2])
+        
+        with patch("mosaic.mosaic._session_manager", mock_session_manager):
+            with patch("mosaic.session_commands._run_local_inference") as mock_infer:
+                mock_infer.return_value = mock_prediction
+                
+                result = beacon._handle_run_inference(payload_bytes)
+                
+                assert result is not None
+                assert result.get("status") == "success"
+                assert "prediction" in result
+    
+    def test_handle_run_inference_handles_exceptions(self, temp_state_dir):
+        """Test _handle_run_inference handles exceptions gracefully."""
+        config = create_test_config_with_state(state_dir=temp_state_dir)
+        beacon = Beacon(config)
+        
+        payload = {
+            "session_id": "test_session_id",
+            "input_data": "/path/to/input.jpg",
+        }
+        
+        # Mock session manager to raise an exception
+        mock_session_manager = MagicMock()
+        mock_session_manager.get_session_by_id.side_effect = Exception("Database error")
+        
+        with patch("mosaic.mosaic._session_manager", mock_session_manager):
+            result = beacon._handle_run_inference(payload)
+            
+            assert result is not None
+            assert result.get("status") == "error"
+            assert "error" in result.get("message", "").lower()

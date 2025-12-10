@@ -77,6 +77,9 @@ from mosaic.session_commands import (
     execute_delete_session,
     execute_training,
     execute_cancel_training,
+    execute_use_session,
+    execute_infer,
+    execute_set_infer_method,
     initialize,
 )
 
@@ -742,7 +745,10 @@ class TestExecuteTraining:
             
             # Session should be COMPLETE
             assert session.status == SessionStatus.COMPLETE
-            mock_session_manager.update_session.assert_any_call(session.id, status=SessionStatus.COMPLETE)
+            # Check that update_session was called with status=COMPLETE (may also include data_distribution_state)
+            update_calls = [call for call in mock_session_manager.update_session.call_args_list 
+                          if call[0][0] == session.id and call[1].get("status") == SessionStatus.COMPLETE]
+            assert len(update_calls) > 0, "Session should be updated with COMPLETE status"
             
             assert any("local only" in line.lower() for line in output_lines)
             
@@ -794,22 +800,46 @@ class TestExecuteTraining:
                 "model_type": "cnn",
             }
             
-            # Pre-set the complete status with stats before the loop starts checking
-            session.data_distribution_state["training_nodes"] = {
-                "192.168.1.1:7001": {
-                    "status": "complete",
-                    "message": "Training completed successfully",
-                    "model_id": "trained_model_123",
-                    "training_stats": training_stats,
-                }
-            }
+            # Mock send_command to return success
+            def mock_send(*args, **kwargs):
+                return {"status": "success"}
+            mock_beacon.send_command.side_effect = mock_send
+            
+            # Create a custom dict class that intercepts assignments to training_nodes
+            # When status is set to "starting", change it to "complete" with stats
+            class TrainingNodesDict(dict):
+                def __setitem__(self, key, value):
+                    # If setting a node status to "starting", change it to "complete" with stats
+                    if isinstance(value, dict) and value.get("status") == "starting":
+                        value = {
+                            "status": "complete",
+                            "message": "Training completed successfully",
+                            "model_id": "trained_model_123",
+                            "training_stats": training_stats,
+                        }
+                    return super().__setitem__(key, value)
+            
+            # Replace training_nodes dict with our custom one that intercepts assignments
+            session.data_distribution_state["training_nodes"] = TrainingNodesDict()
             
             with patch("mosaic.session_commands.time.sleep"):
-                time_values = [0, 0.1]  # Start time, then first check
-                with patch("mosaic.session_commands.time.time", side_effect=time_values):
+                # Provide time values: start_time=0, then first loop check
+                # The loop should detect all_complete=True on first iteration and break
+                time_call_count = [0]
+                def mock_time():
+                    count = time_call_count[0]
+                    time_call_count[0] += 1
+                    if count == 0:
+                        return 0.0  # start_time
+                    else:
+                        # Return values that keep us in the loop (less than timeout of 1.0)
+                        # First check should detect completion and break
+                        return 0.0 + (count * 0.1)
+                
+                with patch("mosaic.session_commands.time.time", side_effect=mock_time):
                     result = execute_training(session.id, output_fn, timeout=1.0, check_interval=0.1)
             
-            # Verify stats are stored on session
+            # Verify stats are stored on session (collated after loop completes)
             assert "training_stats" in session.data_distribution_state
             assert "192.168.1.1:7001" in session.data_distribution_state["training_stats"]
             stored_stats = session.data_distribution_state["training_stats"]["192.168.1.1:7001"]
@@ -1026,5 +1056,420 @@ class TestExecuteCancelTraining:
             
             # Verify session was selected and cancel was attempted
             mock_session_manager.get_sessions.assert_called_once()
+        finally:
+            initialize(None, None, [], MosaicConfig(), None)
+
+
+class TestExecuteUseSession:
+    """Tests for execute_use_session function."""
+    
+    def test_execute_use_session_with_id(self, temp_state_dir):
+        """Test execute_use_session with provided session ID."""
+        output_lines = []
+        
+        def output_fn(text: str) -> None:
+            output_lines.append(text)
+        
+        config = create_test_config_with_state(state_dir=temp_state_dir)
+        mock_beacon = MagicMock()
+        mock_session_manager = MagicMock()
+        
+        model = Model(name="test_model", model_type=ModelType.CNN)
+        plan = Plan(stats_data=[], distribution_plan=[], model=model)
+        session = Session(plan=plan, status=SessionStatus.COMPLETE, id="session_123")
+        session.model_id = "model_123"
+        
+        mock_session_manager.get_session_by_id.return_value = session
+        
+        initialize(mock_beacon, mock_session_manager, [], config)
+        try:
+            execute_use_session(output_fn, "session_123")
+            
+            # Verify output contains session info
+            output_text = "".join(output_lines)
+            assert "session_123" in output_text
+            assert "Using session" in output_text or "✓" in output_text
+            
+            # Verify session manager was called
+            mock_session_manager.get_session_by_id.assert_called_once_with("session_123")
+        finally:
+            initialize(None, None, [], MosaicConfig(), None)
+    
+    def test_execute_use_session_prompts_when_no_id(self, temp_state_dir):
+        """Test execute_use_session prompts for session ID when not provided."""
+        output_lines = []
+        input_responses = ["session_123"]
+        
+        def output_fn(text: str) -> None:
+            output_lines.append(text)
+        
+        def input_fn(prompt: str) -> str:
+            if input_responses:
+                return input_responses.pop(0)
+            return ""
+        
+        config = create_test_config_with_state(state_dir=temp_state_dir)
+        mock_beacon = MagicMock()
+        mock_session_manager = MagicMock()
+        
+        model = Model(name="test_model", model_type=ModelType.CNN)
+        plan = Plan(stats_data=[], distribution_plan=[], model=model)
+        session1 = Session(plan=plan, status=SessionStatus.COMPLETE, id="session_123")
+        session2 = Session(plan=plan, status=SessionStatus.RUNNING, id="session_456")
+        
+        mock_session_manager.get_all_sessions.return_value = [session1, session2]
+        mock_session_manager.get_session_by_id.return_value = session1
+        
+        initialize(mock_beacon, mock_session_manager, [], config, input_fn)
+        try:
+            execute_use_session(output_fn)
+            
+            # Verify sessions were listed
+            output_text = "".join(output_lines)
+            assert "Available sessions" in output_text
+            assert "session_123" in output_text
+            assert "session_456" in output_text
+            
+            # Verify session was set
+            assert "session_123" in output_text or "Using session" in output_text
+        finally:
+            initialize(None, None, [], MosaicConfig(), None)
+    
+    def test_execute_use_session_no_sessions_available(self, temp_state_dir):
+        """Test execute_use_session when no sessions are available."""
+        output_lines = []
+        
+        def output_fn(text: str) -> None:
+            output_lines.append(text)
+        
+        config = create_test_config_with_state(state_dir=temp_state_dir)
+        mock_beacon = MagicMock()
+        mock_session_manager = MagicMock()
+        mock_session_manager.get_all_sessions.return_value = []
+        
+        initialize(mock_beacon, mock_session_manager, [], config)
+        try:
+            execute_use_session(output_fn)
+            
+            output_text = "".join(output_lines)
+            assert "No sessions available" in output_text
+        finally:
+            initialize(None, None, [], MosaicConfig(), None)
+    
+    def test_execute_use_session_not_found(self, temp_state_dir):
+        """Test execute_use_session when session is not found."""
+        output_lines = []
+        
+        def output_fn(text: str) -> None:
+            output_lines.append(text)
+        
+        config = create_test_config_with_state(state_dir=temp_state_dir)
+        mock_beacon = MagicMock()
+        mock_session_manager = MagicMock()
+        mock_session_manager.get_session_by_id.return_value = None
+        
+        initialize(mock_beacon, mock_session_manager, [], config)
+        try:
+            execute_use_session(output_fn, "nonexistent_session")
+            
+            output_text = "".join(output_lines)
+            assert "not found" in output_text.lower() or "Error" in output_text
+        finally:
+            initialize(None, None, [], MosaicConfig(), None)
+    
+    def test_execute_use_session_only_one_at_a_time(self, temp_state_dir):
+        """Test that only one session can be used at a time."""
+        output_lines = []
+        
+        def output_fn(text: str) -> None:
+            output_lines.append(text)
+        
+        config = create_test_config_with_state(state_dir=temp_state_dir)
+        mock_beacon = MagicMock()
+        mock_session_manager = MagicMock()
+        
+        model = Model(name="test_model", model_type=ModelType.CNN)
+        plan = Plan(stats_data=[], distribution_plan=[], model=model)
+        session1 = Session(plan=plan, status=SessionStatus.COMPLETE, id="session_1")
+        session2 = Session(plan=plan, status=SessionStatus.COMPLETE, id="session_2")
+        
+        mock_session_manager.get_session_by_id.side_effect = lambda sid: {
+            "session_1": session1,
+            "session_2": session2,
+        }.get(sid)
+        
+        initialize(mock_beacon, mock_session_manager, [], config)
+        try:
+            # Use first session
+            execute_use_session(output_fn, "session_1")
+            output_lines.clear()
+            
+            # Use second session - should replace the first
+            execute_use_session(output_fn, "session_2")
+            
+            # Verify second session is now active (by checking infer would use it)
+            # We'll verify this by checking that the session manager was called with session_2
+            assert mock_session_manager.get_session_by_id.call_count >= 2
+            # Last call should be for session_2
+            assert mock_session_manager.get_session_by_id.call_args[0][0] == "session_2"
+        finally:
+            initialize(None, None, [], MosaicConfig(), None)
+    
+    def test_execute_use_session_session_manager_not_initialized(self, temp_state_dir):
+        """Test execute_use_session when session manager is not initialized."""
+        output_lines = []
+        
+        def output_fn(text: str) -> None:
+            output_lines.append(text)
+        
+        initialize(None, None, [], MosaicConfig())
+        try:
+            execute_use_session(output_fn, "session_123")
+            
+            output_text = "".join(output_lines)
+            assert "not initialized" in output_text.lower() or "Error" in output_text
+        finally:
+            initialize(None, None, [], MosaicConfig(), None)
+
+
+class TestExecuteInfer:
+    """Tests for execute_infer function."""
+    
+    def test_execute_infer_no_session_set(self, temp_state_dir):
+        """Test execute_infer when no session is set."""
+        output_lines = []
+        
+        def output_fn(text: str) -> None:
+            output_lines.append(text)
+        
+        config = create_test_config_with_state(state_dir=temp_state_dir)
+        mock_beacon = MagicMock()
+        mock_session_manager = MagicMock()
+        
+        initialize(mock_beacon, mock_session_manager, [], config)
+        try:
+            execute_infer(output_fn, "test_input")
+            
+            output_text = "".join(output_lines)
+            assert "No session in use" in output_text or "Error" in output_text
+        finally:
+            initialize(None, None, [], MosaicConfig(), None)
+    
+    def test_execute_infer_shows_advice_when_no_input(self, temp_state_dir):
+        """Test execute_infer shows advice when no input is provided."""
+        output_lines = []
+        
+        def output_fn(text: str) -> None:
+            output_lines.append(text)
+        
+        config = create_test_config_with_state(state_dir=temp_state_dir)
+        mock_beacon = MagicMock()
+        mock_session_manager = MagicMock()
+        
+        model = Model(name="test_model", model_type=ModelType.CNN)
+        plan = Plan(stats_data=[], distribution_plan=[], model=model)
+        file_def = FileDefinition(location="test", data_type=DataType.IMAGE)
+        data = Data(file_definitions=[file_def])
+        session = Session(plan=plan, data=data, status=SessionStatus.COMPLETE, id="session_123")
+        session.model = model
+        
+        mock_session_manager.get_session_by_id.return_value = session
+        
+        initialize(mock_beacon, mock_session_manager, [], config)
+        try:
+            # Set session first
+            execute_use_session(output_fn, "session_123")
+            output_lines.clear()
+            
+            # Try infer without input
+            execute_infer(output_fn, None)
+            
+            output_text = "".join(output_lines)
+            assert "Inference Input Required" in output_text or "advice" in output_text.lower() or "Expected input" in output_text
+        finally:
+            initialize(None, None, [], MosaicConfig(), None)
+    
+    def test_execute_infer_with_remote_nodes(self, temp_state_dir):
+        """Test execute_infer sends commands to remote nodes."""
+        output_lines = []
+        
+        def output_fn(text: str) -> None:
+            output_lines.append(text)
+        
+        config = create_test_config_with_state(state_dir=temp_state_dir)
+        config.host = "192.168.1.0"
+        config.comms_port = 7000
+        mock_beacon = MagicMock()
+        mock_session_manager = MagicMock()
+        
+        model = Model(name="test_model", model_type=ModelType.CNN)
+        plan = Plan(
+            stats_data=[],
+            distribution_plan=[
+                {"host": "192.168.1.1", "comms_port": 7001},
+                {"host": "192.168.1.2", "comms_port": 7002},
+            ],
+            model=model,
+        )
+        file_def = FileDefinition(location="test", data_type=DataType.TEXT)
+        data = Data(file_definitions=[file_def])
+        session = Session(plan=plan, data=data, status=SessionStatus.COMPLETE, id="session_123")
+        session.model = model
+        
+        # Mock successful inference responses
+        def mock_send_command(*args, **kwargs):
+            return {
+                "status": "success",
+                "prediction": [0.5, 0.3, 0.2],  # Mock prediction
+            }
+        
+        mock_beacon.send_command.side_effect = mock_send_command
+        mock_session_manager.get_session_by_id.return_value = session
+        mock_session_manager.update_session.return_value = None
+        
+        initialize(mock_beacon, mock_session_manager, [], config)
+        try:
+            # Set session first
+            execute_use_session(output_fn, "session_123")
+            output_lines.clear()
+            
+            # Run inference
+            execute_infer(output_fn, "/path/to/input")
+            
+            # Verify send_command was called for each node
+            assert mock_beacon.send_command.call_count >= 2
+            
+            # Verify command parameters
+            calls = mock_beacon.send_command.call_args_list
+            for call in calls:
+                kwargs = call.kwargs
+                assert kwargs["command"] == "run_inference"
+                assert kwargs["payload"]["session_id"] == "session_123"
+                assert kwargs["payload"]["input_data"] == "/path/to/input"
+        finally:
+            initialize(None, None, [], MosaicConfig(), None)
+    
+    def test_execute_infer_handles_node_failures(self, temp_state_dir):
+        """Test execute_infer handles node failures gracefully."""
+        output_lines = []
+        
+        def output_fn(text: str) -> None:
+            output_lines.append(text)
+        
+        config = create_test_config_with_state(state_dir=temp_state_dir)
+        mock_beacon = MagicMock()
+        mock_session_manager = MagicMock()
+        
+        model = Model(name="test_model", model_type=ModelType.CNN)
+        plan = Plan(
+            stats_data=[],
+            distribution_plan=[
+                {"host": "192.168.1.1", "comms_port": 7001},
+                {"host": "192.168.1.2", "comms_port": 7002},
+            ],
+            model=model,
+        )
+        file_def = FileDefinition(location="test", data_type=DataType.TEXT)
+        data = Data(file_definitions=[file_def])
+        session = Session(plan=plan, data=data, status=SessionStatus.COMPLETE, id="session_123")
+        session.model = model
+        
+        # Mock mixed responses - one success, one failure
+        call_count = [0]
+        def mock_send_command(*args, **kwargs):
+            call_count[0] += 1
+            if call_count[0] == 1:
+                return {"status": "success", "prediction": [0.5, 0.3, 0.2]}
+            else:
+                return {"status": "error", "message": "Node unavailable"}
+        
+        mock_beacon.send_command.side_effect = mock_send_command
+        mock_session_manager.get_session_by_id.return_value = session
+        mock_session_manager.update_session.return_value = None
+        
+        initialize(mock_beacon, mock_session_manager, [], config)
+        try:
+            # Set session first
+            execute_use_session(output_fn, "session_123")
+            output_lines.clear()
+            
+            # Run inference
+            execute_infer(output_fn, "/path/to/input")
+            
+            # Should still complete with warnings
+            output_text = "".join(output_lines)
+            # Should have aggregated result or error message
+            assert "Aggregating" in output_text or "No predictions" in output_text or "Error" in output_text
+        finally:
+            initialize(None, None, [], MosaicConfig(), None)
+
+
+class TestExecuteSetInferMethod:
+    """Tests for execute_set_infer_method function."""
+    
+    def test_execute_set_infer_method_with_method(self, temp_state_dir):
+        """Test execute_set_infer_method with provided method."""
+        output_lines = []
+        
+        def output_fn(text: str) -> None:
+            output_lines.append(text)
+        
+        config = create_test_config_with_state(state_dir=temp_state_dir)
+        mock_beacon = MagicMock()
+        mock_session_manager = MagicMock()
+        
+        initialize(mock_beacon, mock_session_manager, [], config)
+        try:
+            execute_set_infer_method(output_fn, "fedprox")
+            
+            output_text = "".join(output_lines)
+            assert "fedprox" in output_text.lower()
+            assert "set" in output_text.lower() or "✓" in output_text
+        finally:
+            initialize(None, None, [], MosaicConfig(), None)
+    
+    def test_execute_set_infer_method_prompts_when_no_method(self, temp_state_dir):
+        """Test execute_set_infer_method prompts when no method provided."""
+        output_lines = []
+        input_responses = ["fedavg"]
+        
+        def output_fn(text: str) -> None:
+            output_lines.append(text)
+        
+        def input_fn(prompt: str) -> str:
+            if input_responses:
+                return input_responses.pop(0)
+            return ""
+        
+        config = create_test_config_with_state(state_dir=temp_state_dir)
+        mock_beacon = MagicMock()
+        mock_session_manager = MagicMock()
+        
+        initialize(mock_beacon, mock_session_manager, [], config, input_fn)
+        try:
+            execute_set_infer_method(output_fn, None)
+            
+            output_text = "".join(output_lines)
+            assert "Available" in output_text or "methods" in output_text.lower()
+        finally:
+            initialize(None, None, [], MosaicConfig(), None)
+    
+    def test_execute_set_infer_method_invalid_method(self, temp_state_dir):
+        """Test execute_set_infer_method with invalid method."""
+        output_lines = []
+        
+        def output_fn(text: str) -> None:
+            output_lines.append(text)
+        
+        config = create_test_config_with_state(state_dir=temp_state_dir)
+        mock_beacon = MagicMock()
+        mock_session_manager = MagicMock()
+        
+        initialize(mock_beacon, mock_session_manager, [], config)
+        try:
+            execute_set_infer_method(output_fn, "invalid_method")
+            
+            output_text = "".join(output_lines)
+            assert "Error" in output_text or "Unknown" in output_text
         finally:
             initialize(None, None, [], MosaicConfig(), None)

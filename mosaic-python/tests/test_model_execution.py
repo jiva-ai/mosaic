@@ -175,13 +175,19 @@ def test_train_cnn_model(small_cnn_model, sample_data, tmp_config):
     # Update input_shape to match model (smaller for faster testing)
     sample_data.file_definitions[0].input_shape = [3, 32, 32]
     
-    trained_model = _train_cnn_model(
+    training_result = _train_cnn_model(
         small_cnn_model,
         sample_data,
         tmp_config,
         epochs=1,
         hyperparameters=fast_hyperparams,
     )
+    
+    # Handle both old (just model) and new (model, stats) return formats
+    if isinstance(training_result, tuple) and len(training_result) == 2:
+        trained_model, training_stats = training_result
+    else:
+        trained_model = training_result
     
     assert trained_model is not None
     assert isinstance(trained_model, nn.Module)
