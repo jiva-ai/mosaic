@@ -1628,10 +1628,15 @@ class Beacon:
             session = None
             try:
                 # Import here to avoid circular import
-                from mosaic.mosaic import add_session, _sessions
+                import mosaic.mosaic as mosaic_module
+                from mosaic.mosaic import add_session
                 
                 # Check if session with this plan.id already exists to avoid duplicates
-                existing_session = next((s for s in _sessions if s.plan.id == plan.id), None)
+                if mosaic_module._session_manager is not None:
+                    sessions = mosaic_module._session_manager.get_sessions()
+                    existing_session = next((s for s in sessions if s.plan.id == plan.id), None)
+                else:
+                    existing_session = None
                 if existing_session is None:
                     session = Session(plan=plan, data=data, status=SessionStatus.TRAINING)
                     add_session(session)
@@ -1798,10 +1803,15 @@ class Beacon:
             session = None
             try:
                 # Import here to avoid circular import
-                from mosaic.mosaic import add_session, _sessions
+                import mosaic.mosaic as mosaic_module
+                from mosaic.mosaic import add_session
                 
                 # Check if session with this plan.id already exists to avoid duplicates
-                existing_session = next((s for s in _sessions if s.plan.id == plan.id), None)
+                if mosaic_module._session_manager is not None:
+                    sessions = mosaic_module._session_manager.get_sessions()
+                    existing_session = next((s for s in sessions if s.plan.id == plan.id), None)
+                else:
+                    existing_session = None
                 if existing_session is None:
                     session = Session(plan=plan, data=data, status=SessionStatus.TRAINING)
                     add_session(session)

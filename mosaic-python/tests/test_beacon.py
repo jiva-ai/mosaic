@@ -1376,12 +1376,14 @@ class TestBeaconCollectStats:
             
             beacon = Beacon(config)
             
-            # Clear any existing sessions and track initial count
+            # Initialize session manager for this test
             import mosaic.mosaic as mosaic_module
-            if mosaic_module._session_manager is not None:
-                initial_session_count = len(mosaic_module._session_manager.get_sessions())
-            else:
-                initial_session_count = 0
+            from mosaic_config.state_manager import SessionStateManager
+            mosaic_module._session_manager = SessionStateManager(config)
+            mosaic_module._config = config
+            
+            # Clear any existing sessions and track initial count
+            initial_session_count = len(mosaic_module._session_manager.get_sessions())
             
             # Create test plan and data
             import zipfile
@@ -1475,12 +1477,8 @@ class TestBeaconCollectStats:
             assert not chunk_file.exists(), "Chunk file should be cleaned up"
             
             # Verify that a session was created
-            import mosaic.mosaic as mosaic_module
-            if mosaic_module._session_manager is not None:
-                sessions = mosaic_module._session_manager.get_sessions()
-                session = next((s for s in sessions if s.plan.id == plan.id), None)
-            else:
-                session = None
+            sessions = mosaic_module._session_manager.get_sessions()
+            session = next((s for s in sessions if s.plan.id == plan.id), None)
             assert session is not None, "Session should be created for this plan"
             assert session.data is not None, "Session should have data"
             assert len(session.data.file_definitions) == 1, "Session data should have file definitions"
@@ -1571,12 +1569,14 @@ class TestBeaconCollectStats:
             
             beacon = Beacon(config)
             
-            # Clear any existing sessions
+            # Initialize session manager for this test
             import mosaic.mosaic as mosaic_module
-            if mosaic_module._session_manager is not None:
-                initial_session_count = len(mosaic_module._session_manager.get_sessions())
-            else:
-                initial_session_count = 0
+            from mosaic_config.state_manager import SessionStateManager
+            mosaic_module._session_manager = SessionStateManager(config)
+            mosaic_module._config = config
+            
+            # Clear any existing sessions
+            initial_session_count = len(mosaic_module._session_manager.get_sessions())
             
             # Create test plan and data
             model = Model(name="test_model")
@@ -1612,12 +1612,9 @@ class TestBeaconCollectStats:
             assert result["file_count"] == 1
             
             # Verify that a session was created
-            if mosaic_module._session_manager is not None:
-                sessions = mosaic_module._session_manager.get_sessions()
-                assert len(sessions) == initial_session_count + 1, "One session should be created"
-                session = sessions[-1]  # Get the most recently added session
-            else:
-                assert False, "Session manager should be initialized"
+            sessions = mosaic_module._session_manager.get_sessions()
+            assert len(sessions) == initial_session_count + 1, "One session should be created"
+            session = sessions[-1]  # Get the most recently added session
             assert session.plan.id == plan.id, "Session should have the correct plan"
             assert session.data is not None, "Session should have data"
             assert len(session.data.file_definitions) == 1, "Session data should have file definitions"
@@ -1660,12 +1657,14 @@ class TestBeaconCollectStats:
             
             beacon = Beacon(config)
             
-            # Clear any existing sessions
+            # Initialize session manager for this test
             import mosaic.mosaic as mosaic_module
-            if mosaic_module._session_manager is not None:
-                initial_session_count = len(mosaic_module._session_manager.get_sessions())
-            else:
-                initial_session_count = 0
+            from mosaic_config.state_manager import SessionStateManager
+            mosaic_module._session_manager = SessionStateManager(config)
+            mosaic_module._config = config
+            
+            # Clear any existing sessions
+            initial_session_count = len(mosaic_module._session_manager.get_sessions())
             
             # Create test plan and data
             model = Model(name="test_model")
@@ -1707,12 +1706,9 @@ class TestBeaconCollectStats:
             assert result["file_count"] == 1
             
             # Verify that a session was created
-            if mosaic_module._session_manager is not None:
-                sessions = mosaic_module._session_manager.get_sessions()
-                assert len(sessions) == initial_session_count + 1, "One session should be created"
-                session = sessions[-1]  # Get the most recently added session
-            else:
-                assert False, "Session manager should be initialized"
+            sessions = mosaic_module._session_manager.get_sessions()
+            assert len(sessions) == initial_session_count + 1, "One session should be created"
+            session = sessions[-1]  # Get the most recently added session
             session_id = session.id
             
             # Verify files are extracted to session-specific directory
