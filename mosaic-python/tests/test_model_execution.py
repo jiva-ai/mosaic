@@ -21,7 +21,7 @@ from mosaic_planner.model_execution import (
     _train_wav2vec_model,
 )
 from mosaic_planner.model_planner import _calculate_compression_ratio, _get_node_capabilities
-from mosaic_planner.state import Data, DataType, FileDefinition, Model, ModelType, Plan
+from mosaic_config.state import Data, DataType, FileDefinition, Model, ModelType, Plan
 
 
 @pytest.fixture

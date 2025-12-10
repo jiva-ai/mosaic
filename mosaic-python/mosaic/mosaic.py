@@ -18,8 +18,8 @@ from mosaic_planner import (
     plan_dynamic_weighted_batches,
     plan_static_weighted_shards,
 )
-from mosaic_planner.state import Model, ModelType, Plan, Session
-from mosaic.state_manager import SessionStateManager
+from mosaic_config.state import Model, ModelType, Plan, Session
+from mosaic_config.state_manager import SessionStateManager
 
 # Set up logging
 logger = logging.getLogger(__name__)

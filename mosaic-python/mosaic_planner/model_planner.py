@@ -10,7 +10,7 @@ import onnx
 from onnx import helper, numpy_helper
 
 from mosaic_config.config import MosaicConfig, read_config
-from mosaic_planner.state import Model, ModelType, Plan
+from mosaic_config.state import Model, ModelType, Plan
 
 logger = logging.getLogger(__name__)
 

@@ -3,7 +3,7 @@
 from pathlib import Path
 from typing import Optional, Union
 
-from mosaic_planner.state import Model, ModelType
+from mosaic_config.state import Model, ModelType
 
 from mosaic_model_runtime.predefined_models import (
     create_biggan_onnx,

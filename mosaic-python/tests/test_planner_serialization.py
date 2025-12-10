@@ -12,7 +12,7 @@ from mosaic_planner.planner import (
     deserialize_plan_with_data,
     prepare_file_data_for_transmission,
 )
-from mosaic_planner.state import Data, FileDefinition, DataType, Model, ModelType, Plan
+from mosaic_config.state import Data, FileDefinition, DataType, Model, ModelType, Plan
 
 
 class TestSerializeDeserializePlanWithData:

@@ -14,7 +14,7 @@ from torch.utils.data import DataLoader, Dataset
 
 from mosaic_config.config import MosaicConfig, read_config
 from mosaic_planner.model_planner import _load_onnx_model
-from mosaic_planner.state import Data, FileDefinition, Model, ModelType, Session
+from mosaic_config.state import Data, FileDefinition, Model, ModelType, Session
 from mosaic_planner.training_hyperparameters import (
     DEFAULT_CNN_HYPERPARAMETERS,
     DEFAULT_GNN_HYPERPARAMETERS,

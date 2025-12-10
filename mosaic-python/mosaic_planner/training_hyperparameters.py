@@ -2,7 +2,7 @@
 
 from typing import Dict, Any
 
-from mosaic_planner.state import ModelType
+from mosaic_config.state import ModelType
 
 # Default hyperparameters for CNN models (ResNet-50, ResNet-101)
 DEFAULT_CNN_HYPERPARAMETERS: Dict[str, Any] = {

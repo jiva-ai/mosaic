@@ -16,7 +16,7 @@ from typing import Any, Dict, List, Optional, Tuple, Union
 import numpy as np
 from stream_unzip import stream_unzip
 
-from mosaic_planner.state import Data, DataType, FileDefinition, Model, Plan, Project
+from mosaic_config.state import Data, DataType, FileDefinition, Model, Plan, Project
 
 # Constants for dynamic batch planning
 MAX_CPU_UTIL = 90.0

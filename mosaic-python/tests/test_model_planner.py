@@ -8,7 +8,7 @@ import pytest
 from onnx import helper
 
 from mosaic_planner.model_planner import plan_model
-from mosaic_planner.state import Model, ModelType, Plan
+from mosaic_config.state import Model, ModelType, Plan
 
 
 def _create_mock_onnx_model_with_conv_layers(num_layers: int = 10) -> onnx.ModelProto:

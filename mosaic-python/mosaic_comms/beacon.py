@@ -14,12 +14,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Union
 
+from mosaic_config.state_manager import HeartbeatStateManager
 from mosaic_config.config import MosaicConfig, Peer
-from mosaic_config.state_utils import (
-    StateIdentifiers,
-    read_state,
-    save_state,
-)
 from mosaic_planner.planner import (
     chunk_data,
     deserialize_plan_with_data,
@@ -28,52 +24,20 @@ from mosaic_planner.planner import (
     serialize_plan_with_data,
     unzip_stream_memory_safe,
 )
-from mosaic_planner.state import Data, FileDefinition, Model, Plan, Session, SessionStatus
+from mosaic_config.state import (
+    Data,
+    FileDefinition,
+    Model,
+    Plan,
+    ReceiveHeartbeatStatus,
+    SendHeartbeatStatus,
+    Session,
+    SessionStatus,
+)
 from mosaic_stats.benchmark import load_benchmarks
 from mosaic_stats.stats_collector import StatsCollector
 
 logger = logging.getLogger(__name__)
-
-
-@dataclass
-class SendHeartbeatStatus:
-    """Status of heartbeats being sent to a peer."""
-
-    host: str
-    heartbeat_port: int
-    last_time_sent: int = 0  # milliseconds since epoch, 0 means never sent
-    connection_status: str = "nascent"  # cert_error, nascent, ok, timeout
-
-    def __post_init__(self):
-        """Validate connection status."""
-        valid_statuses = {"cert_error", "nascent", "ok", "timeout"}
-        if self.connection_status not in valid_statuses:
-            raise ValueError(
-                f"Invalid connection_status: {self.connection_status}. "
-                f"Must be one of {valid_statuses}"
-            )
-
-
-@dataclass
-class ReceiveHeartbeatStatus:
-    """Status of heartbeats being received from a peer."""
-
-    host: str
-    heartbeat_port: int
-    comms_port: int = 0  # Comms port for the peer, 0 means not set
-    last_time_received: int = 0  # milliseconds since epoch, 0 means never received
-    connection_status: str = "nascent"  # nascent, online, stale
-    stats_payload: Optional[Dict[str, Any]] = None
-    delay: Optional[int] = None  # Delay in nanoseconds (receive_time_ns - send_time_ns)
-
-    def __post_init__(self):
-        """Validate connection status."""
-        valid_statuses = {"nascent", "online", "stale"}
-        if self.connection_status not in valid_statuses:
-            raise ValueError(
-                f"Invalid connection_status: {self.connection_status}. "
-                f"Must be one of {valid_statuses}"
-            )
 
 
 class Beacon:
@@ -89,27 +53,13 @@ class Beacon:
         self.config = config
         self.stats_collector = StatsCollector(config)
 
-        # Dictionary keyed by (host, heartbeat_port) for efficient lookup
-        # Try to load from saved state, otherwise initialize empty
-        loaded_send = read_state(
-            config, StateIdentifiers.SEND_HEARTBEAT_STATUSES, default=None
-        )
-        loaded_receive = read_state(
-            config, StateIdentifiers.RECEIVE_HEARTBEAT_STATUSES, default=None
-        )
+        # Initialize heartbeat state manager (loads from saved state automatically)
+        self._heartbeat_state_manager = HeartbeatStateManager(config)
         
-        # Initialize from loaded state or empty dict
-        if isinstance(loaded_send, dict):
-            self._send_heartbeat_statuses: Dict[tuple[str, int], SendHeartbeatStatus] = loaded_send
-            logger.info(f"Loaded {len(loaded_send)} send heartbeat statuses from state")
-        else:
-            self._send_heartbeat_statuses: Dict[tuple[str, int], SendHeartbeatStatus] = {}
-        
-        if isinstance(loaded_receive, dict):
-            self._receive_heartbeat_statuses: Dict[tuple[str, int], ReceiveHeartbeatStatus] = loaded_receive
-            logger.info(f"Loaded {len(loaded_receive)} receive heartbeat statuses from state")
-        else:
-            self._receive_heartbeat_statuses: Dict[tuple[str, int], ReceiveHeartbeatStatus] = {}
+        # Access heartbeat statuses through manager (for backward compatibility with existing code)
+        # The manager provides direct access to the dictionaries for efficient operations
+        self._send_heartbeat_statuses = self._heartbeat_state_manager._send_heartbeat_statuses
+        self._receive_heartbeat_statuses = self._heartbeat_state_manager._receive_heartbeat_statuses
 
         # Command handler registry
         # Handlers can accept Dict (JSON) or bytes (binary/pickled) payloads
@@ -328,16 +278,7 @@ class Beacon:
                 
                 # Save state after sending heartbeats
                 try:
-                    save_state(
-                        self.config,
-                        self._send_heartbeat_statuses,
-                        StateIdentifiers.SEND_HEARTBEAT_STATUSES,
-                    )
-                    save_state(
-                        self.config,
-                        self._receive_heartbeat_statuses,
-                        StateIdentifiers.RECEIVE_HEARTBEAT_STATUSES,
-                    )
+                    self._heartbeat_state_manager.save_heartbeat_statuses()
                 except Exception as e:
                     logger.warning(f"Failed to save heartbeat state: {e}")
             except Exception as e:

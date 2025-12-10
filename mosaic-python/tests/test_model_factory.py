@@ -5,7 +5,7 @@ from unittest.mock import patch
 
 import pytest
 
-from mosaic_planner.state import ModelType
+from mosaic_config.state import ModelType
 
 from mosaic_model_runtime.model_factory import (
     create_biggan_model,

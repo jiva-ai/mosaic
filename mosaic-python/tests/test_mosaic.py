@@ -13,7 +13,7 @@ from mosaic.mosaic import (
     remove_model,
     remove_session,
 )
-from mosaic_planner.state import Model, ModelType, Plan, Session, SessionStatus
+from mosaic_config.state import Model, ModelType, Plan, Session, SessionStatus
 
 
 def test_calculate_data_distribution_weighted_shard_default():
@@ -211,8 +211,11 @@ class TestMosaicCommandHandlers:
         session1 = Session(plan=plan1, status=SessionStatus.TRAINING)
         session2 = Session(plan=plan2, status=SessionStatus.COMPLETE)
 
-        # Set up global sessions list
-        with patch("mosaic.mosaic._sessions", [session1, session2]):
+        # Set up global session manager
+        from mosaic_config.state_manager import SessionStateManager
+        mock_session_manager = MagicMock()
+        mock_session_manager.get_sessions.return_value = [session1, session2]
+        with patch("mosaic.mosaic._session_manager", mock_session_manager):
             # Call the handler
             result = mosaic_module._handle_sessions_command({})
 
@@ -250,8 +253,11 @@ class TestMosaicCommandHandlers:
     def test_sessions_handler_returns_empty_list_when_no_sessions(self):
         """Test that sessions handler returns empty list when no sessions exist."""
         import mosaic.mosaic as mosaic_module
-        # Set up empty sessions list
-        with patch("mosaic.mosaic._sessions", []):
+        # Set up empty session manager
+        from mosaic_config.state_manager import SessionStateManager
+        mock_session_manager = MagicMock()
+        mock_session_manager.get_sessions.return_value = []
+        with patch("mosaic.mosaic._session_manager", mock_session_manager):
             result = mosaic_module._handle_sessions_command({})
             assert isinstance(result, list), "Handler should return a list"
             assert len(result) == 0, "Should return empty list when no sessions"
@@ -282,8 +288,11 @@ class TestMosaicCommandHandlers:
             # Register handlers on beacon2 (simulating what main() does)
             beacon2.register("sessions", mosaic_module._handle_sessions_command)
 
-            # Set up global sessions list for beacon2
-            with patch("mosaic.mosaic._sessions", [session1]):
+            # Set up global session manager for beacon2
+            from mosaic_config.state_manager import SessionStateManager
+            mock_session_manager = MagicMock()
+            mock_session_manager.get_sessions.return_value = [session1]
+            with patch("mosaic.mosaic._session_manager", mock_session_manager):
                 # Start both beacons
                 beacon1.start()
                 beacon2.start()
@@ -432,15 +441,18 @@ class TestAddRemoveSession:
         )
         session = Session(plan=plan, status=SessionStatus.TRAINING)
 
-        # Set up global config and empty sessions list
+        # Set up global config and session manager
+        from mosaic_config.state_manager import SessionStateManager
+        session_manager = SessionStateManager(config)
         with patch("mosaic.mosaic._config", config):
-            with patch("mosaic.mosaic._sessions", []):
+            with patch("mosaic.mosaic._session_manager", session_manager):
                 # Add session
                 add_session(session)
 
                 # Verify session was added to the list
-                assert len(mosaic_module._sessions) == 1
-                assert mosaic_module._sessions[0].id == session.id
+                sessions = session_manager.get_sessions()
+                assert len(sessions) == 1
+                assert sessions[0].id == session.id
 
                 # Verify state was persisted
                 loaded_sessions = read_state(config, StateIdentifiers.SESSIONS, default=None)
@@ -473,16 +485,21 @@ class TestAddRemoveSession:
         session1 = Session(plan=plan1, status=SessionStatus.TRAINING)
         session2 = Session(plan=plan2, status=SessionStatus.COMPLETE)
 
-        # Set up global config and sessions list
+        # Set up global config and session manager
+        from mosaic_config.state_manager import SessionStateManager
+        session_manager = SessionStateManager(config)
+        session_manager.add_session(session1)
+        session_manager.add_session(session2)
         with patch("mosaic.mosaic._config", config):
-            with patch("mosaic.mosaic._sessions", [session1, session2]):
+            with patch("mosaic.mosaic._session_manager", session_manager):
                 # Remove session1
                 result = remove_session(session1.id)
 
                 # Verify removal was successful
                 assert result is True
-                assert len(mosaic_module._sessions) == 1
-                assert mosaic_module._sessions[0].id == session2.id
+                sessions = session_manager.get_sessions()
+                assert len(sessions) == 1
+                assert sessions[0].id == session2.id
 
                 # Verify state was persisted
                 loaded_sessions = read_state(config, StateIdentifiers.SESSIONS, default=None)
@@ -508,16 +525,20 @@ class TestAddRemoveSession:
         )
         session = Session(plan=plan, status=SessionStatus.TRAINING)
 
-        # Set up global config and sessions list
+        # Set up global config and session manager
+        from mosaic_config.state_manager import SessionStateManager
+        session_manager = SessionStateManager(config)
+        session_manager.add_session(session)
         with patch("mosaic.mosaic._config", config):
-            with patch("mosaic.mosaic._sessions", [session]):
+            with patch("mosaic.mosaic._session_manager", session_manager):
                 # Try to remove non-existent session
                 result = remove_session("non-existent-id")
 
                 # Verify removal failed
                 assert result is False
-                assert len(mosaic_module._sessions) == 1
-                assert mosaic_module._sessions[0].id == session.id
+                sessions = session_manager.get_sessions()
+                assert len(sessions) == 1
+                assert sessions[0].id == session.id
 
     def test_add_multiple_sessions_persists_all(self, temp_state_dir):
         """Test that adding multiple sessions persists all of them."""
@@ -544,16 +565,19 @@ class TestAddRemoveSession:
         session1 = Session(plan=plan1, status=SessionStatus.TRAINING)
         session2 = Session(plan=plan2, status=SessionStatus.IDLE)
 
-        # Set up global config and empty sessions list
+        # Set up global config and session manager
+        from mosaic_config.state_manager import SessionStateManager
+        session_manager = SessionStateManager(config)
         with patch("mosaic.mosaic._config", config):
-            with patch("mosaic.mosaic._sessions", []):
+            with patch("mosaic.mosaic._session_manager", session_manager):
                 # Add both sessions
                 add_session(session1)
                 add_session(session2)
 
                 # Verify both sessions were added
-                assert len(mosaic_module._sessions) == 2
-                session_ids = [s.id for s in mosaic_module._sessions]
+                sessions = session_manager.get_sessions()
+                assert len(sessions) == 2
+                session_ids = [s.id for s in sessions]
                 assert session1.id in session_ids
                 assert session2.id in session_ids
 

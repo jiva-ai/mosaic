@@ -10,7 +10,7 @@ import numpy as np
 
 from mosaic_config.config import MosaicConfig
 from mosaic_planner.planner import plan_data_distribution
-from mosaic_planner.state import Data, DataType, FileDefinition, Model, Project
+from mosaic_config.state import Data, DataType, FileDefinition, Model, Project
 
 from tests.create_dummy_data import (
     create_dummy_csv,
