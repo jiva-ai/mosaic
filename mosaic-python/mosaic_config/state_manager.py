@@ -1,10 +1,11 @@
 """State management layer for Session objects and heartbeat statuses in Mosaic nodes."""
 
 import logging
-from typing import Dict, List, Optional, Tuple
+from typing import Callable, Dict, List, Optional, Tuple
 
 from mosaic_config.config import MosaicConfig
 from mosaic_config.state import (
+    Model,
     ReceiveHeartbeatStatus,
     SendHeartbeatStatus,
     Session,
@@ -22,14 +23,16 @@ class SessionStateManager:
     and ensures that all manipulations trigger automatic saves to persistent storage.
     """
 
-    def __init__(self, config: MosaicConfig):
+    def __init__(self, config: MosaicConfig, model_loader: Optional[Callable[[str], Optional["Model"]]] = None):
         """
         Initialize the SessionStateManager and load existing sessions.
         
         Args:
             config: MosaicConfig instance with state_location configured
+            model_loader: Optional function(model_id: str) -> Optional[Model] to lazily load models by ID
         """
         self._config = config
+        self._model_loader = model_loader
         self._sessions: List[Session] = []
         self._load_sessions()
 
@@ -38,11 +41,17 @@ class SessionStateManager:
         Load sessions from persistent state on startup.
         
         If the pickle file exists, sessions are loaded. Otherwise, an empty list is initialized.
+        Model objects are not loaded - only model_id is preserved. Models are loaded lazily when accessed.
         """
         try:
             loaded_sessions = read_state(self._config, StateIdentifiers.SESSIONS, default=None)
             
             if isinstance(loaded_sessions, list):
+                # Set model loader on all sessions and plans for lazy loading
+                for session in loaded_sessions:
+                    session._model_loader = self._model_loader
+                    if hasattr(session.plan, '_model_loader'):
+                        session.plan._model_loader = self._model_loader
                 self._sessions = loaded_sessions
                 logger.info(f"Loaded {len(self._sessions)} sessions from state")
             else:
@@ -96,6 +105,17 @@ class SessionStateManager:
         Args:
             session: Session instance to add
         """
+        # Ensure model_id is set from model if model is present
+        if session.model is not None:
+            session.model_id = session.model.id
+        if session.plan.model is not None:
+            session.plan.model_id = session.plan.model.id
+        
+        # Set model loader for lazy loading
+        session._model_loader = self._model_loader
+        if hasattr(session.plan, '_model_loader'):
+            session.plan._model_loader = self._model_loader
+        
         self._sessions.append(session)
         self._save_sessions()
         logger.debug(f"Added session with ID: {session.id}")

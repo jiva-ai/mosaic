@@ -233,8 +233,11 @@ class TestMosaicCommandHandlers:
             # Verify specific values
             assert result[0]["status"] == "training"
             assert result[1]["status"] == "complete"
-            assert result[0]["plan"]["model"]["name"] == "test_model"
-            assert result[1]["plan"]["model"]["name"] == "test_model"
+            # Model objects are not persisted - only model_id is saved
+            assert "model_id" in result[0]["plan"], "Plan should have 'model_id' field"
+            assert "model_id" in result[1]["plan"], "Plan should have 'model_id' field"
+            assert result[0]["plan"]["model_id"] == model.id
+            assert result[1]["plan"]["model_id"] == model.id
             
             # Verify IDs are present and unique
             assert "id" in result[0], "Session should have 'id' field"
@@ -314,7 +317,9 @@ class TestMosaicCommandHandlers:
                     assert isinstance(response, list), "Response should be a list"
                     assert len(response) == 1, f"Expected 1 session, got {len(response)}"
                     assert response[0]["status"] == "training"
-                    assert response[0]["plan"]["model"]["name"] == "test_model"
+                    # Model objects are not persisted - only model_id is saved
+                    assert "model_id" in response[0]["plan"], "Plan should have 'model_id' field"
+                    assert response[0]["plan"]["model_id"] == model.id
                     
                     # Verify IDs are present and persist across beacons
                     assert "id" in response[0], "Session should have 'id' field"

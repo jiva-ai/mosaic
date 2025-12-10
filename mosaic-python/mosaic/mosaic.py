@@ -477,16 +477,7 @@ def main() -> None:
     global _config
     _config = config
     
-    # Step 1.5: Initialize SessionStateManager (loads sessions automatically)
-    logger.info("Initializing Session state manager...")
-    try:
-        global _session_manager
-        _session_manager = SessionStateManager(config)
-        logger.info("Session state manager initialized successfully")
-    except Exception as e:
-        logger.error(f"Error initializing Session state manager: {e}")
-        sys.exit(1)
-    
+    # Step 1.5: Load Models from state first (needed for model loader)
     logger.info("Loading Models from state...")
     try:
         global _models
@@ -501,6 +492,25 @@ def main() -> None:
     except Exception as e:
         logger.warning(f"Error loading Models from state: {e}")
         _models = []
+    
+    # Step 1.6: Initialize SessionStateManager (loads sessions automatically)
+    logger.info("Initializing Session state manager...")
+    try:
+        global _session_manager
+        
+        # Create model loader function that looks up models by ID from the global _models list
+        def load_model_by_id(model_id: str) -> Optional[Model]:
+            """Load a model by ID from the global models list."""
+            for model in _models:
+                if model.id == model_id:
+                    return model
+            return None
+        
+        _session_manager = SessionStateManager(config, model_loader=load_model_by_id)
+        logger.info("Session state manager initialized successfully")
+    except Exception as e:
+        logger.error(f"Error initializing Session state manager: {e}")
+        sys.exit(1)
     
     # Step 2: Create Beacon
     logger.info("Creating Beacon instance...")

@@ -2,6 +2,7 @@
 
 import pickle
 from pathlib import Path
+from typing import Optional
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -102,11 +103,22 @@ class TestSessionStateManagerReadWrite:
             time_ended=-1,
         )
         
+        # Save model to state so it can be loaded later
+        save_state(config, [model], StateIdentifiers.MODELS)
+        
         # Add session (triggers save)
         manager.add_session(session)
         
-        # Create a new manager to read from disk
-        manager2 = SessionStateManager(config)
+        # Create model loader function
+        def model_loader(model_id: str) -> Optional[Model]:
+            models = read_state(config, StateIdentifiers.MODELS, default=[])
+            for m in models:
+                if m.id == model_id:
+                    return m
+            return None
+        
+        # Create a new manager to read from disk with model loader
+        manager2 = SessionStateManager(config, model_loader=model_loader)
         loaded_sessions = manager2.get_sessions()
         
         # Verify exactly one session
@@ -119,6 +131,10 @@ class TestSessionStateManagerReadWrite:
         assert loaded_session.time_started == session.time_started
         assert loaded_session.time_ended == session.time_ended
         assert loaded_session.plan.id == session.plan.id
+        # Verify model_id is preserved
+        assert loaded_session.plan.model_id == session.plan.model_id
+        # Verify model can be loaded lazily
+        assert loaded_session.plan.model is not None
         assert loaded_session.plan.model.name == session.plan.model.name
 
     def test_write_and_read_multiple_sessions(self, temp_state_dir):
@@ -229,11 +245,22 @@ class TestSessionStateManagerReadWrite:
             id="session-789",
         )
         
+        # Save model to state so it can be loaded later
+        save_state(config, [model], StateIdentifiers.MODELS)
+        
         # Add session (triggers save)
         manager.add_session(session)
         
-        # Create a new manager to read from disk
-        manager2 = SessionStateManager(config)
+        # Create model loader function
+        def model_loader(model_id: str) -> Optional[Model]:
+            models = read_state(config, StateIdentifiers.MODELS, default=[])
+            for m in models:
+                if m.id == model_id:
+                    return m
+            return None
+        
+        # Create a new manager to read from disk with model loader
+        manager2 = SessionStateManager(config, model_loader=model_loader)
         loaded_sessions = manager2.get_sessions()
         
         # Verify all attributes
@@ -251,7 +278,10 @@ class TestSessionStateManagerReadWrite:
         assert len(loaded_session.plan.stats_data) == 1
         assert loaded_session.plan.stats_data[0]["host"] == "node1"
         
-        # Model attributes
+        # Model attributes - verify model_id is preserved
+        assert loaded_session.plan.model_id == "model-123"
+        # Verify model can be loaded lazily
+        assert loaded_session.plan.model is not None
         assert loaded_session.plan.model.id == "model-123"
         assert loaded_session.plan.model.name == "test_model"
         
@@ -338,14 +368,25 @@ class TestSessionStateManagerReadWrite:
             time_started=1234567890,
         )
         
+        # Save model to state so it can be loaded later
+        save_state(config, [model], StateIdentifiers.MODELS)
+        
         # Add session (triggers save)
         manager.add_session(session)
+        
+        # Create model loader function
+        def model_loader(model_id: str) -> Optional[Model]:
+            models = read_state(config, StateIdentifiers.MODELS, default=[])
+            for m in models:
+                if m.id == model_id:
+                    return m
+            return None
         
         # Serialize original session for comparison
         original_pickled = pickle.dumps(session)
         
-        # Create a new manager to read from disk
-        manager2 = SessionStateManager(config)
+        # Create a new manager to read from disk with model loader
+        manager2 = SessionStateManager(config, model_loader=model_loader)
         loaded_sessions = manager2.get_sessions()
         
         # Verify one session
@@ -362,6 +403,10 @@ class TestSessionStateManagerReadWrite:
         assert loaded_session.time_started == session.time_started
         assert loaded_session.time_ended == session.time_ended
         assert loaded_session.plan.id == session.plan.id
+        # Verify model_id is preserved
+        assert loaded_session.plan.model_id == session.plan.model_id
+        # Verify model can be loaded lazily
+        assert loaded_session.plan.model is not None
         assert loaded_session.plan.model.name == session.plan.model.name
         assert loaded_session.data is not None
         assert len(loaded_session.data.file_definitions) == 1
@@ -511,6 +556,9 @@ class TestMosaicStartupSessionLoading:
         
         # Create test sessions and save them to state
         model = Model(name="test_model", model_type=ModelType.CNN)
+        # Save model to state so it can be loaded later
+        save_state(config, [model], StateIdentifiers.MODELS)
+        
         sessions = []
         for i in range(3):
             plan = Plan(
@@ -548,14 +596,23 @@ class TestMosaicStartupSessionLoading:
             mosaic_module._config = None
             mosaic_module._session_manager = None
             mosaic_module._beacon = None
-            mosaic_module._models = []
+            # Load models from state (simulating what main() does)
+            loaded_models = read_state(config, StateIdentifiers.MODELS, default=[])
+            mosaic_module._models = loaded_models if isinstance(loaded_models, list) else []
             
             # Simulate the startup sequence from main() up to session loading
             # Step 1: Create MosaicConfig (already done via mock)
             mosaic_module._config = config
             
             # Step 1.5: Initialize SessionStateManager (loads sessions automatically)
-            mosaic_module._session_manager = SessionStateManager(config)
+            # Create model loader function (simulating what main() does)
+            def load_model_by_id(model_id: str) -> Optional[Model]:
+                for m in mosaic_module._models:
+                    if m.id == model_id:
+                        return m
+                return None
+            
+            mosaic_module._session_manager = SessionStateManager(config, model_loader=load_model_by_id)
             
             # Verify sessions were loaded
             loaded_sessions = mosaic_module._session_manager.get_sessions()
@@ -572,6 +629,10 @@ class TestMosaicStartupSessionLoading:
                 assert loaded_session.id == original_session.id
                 assert loaded_session.status == original_session.status
                 assert loaded_session.time_started == original_session.time_started
+                # Verify model_id is preserved
+                assert loaded_session.plan.model_id == original_session.plan.model_id
+                # Verify model can be loaded lazily
+                assert loaded_session.plan.model is not None
                 assert loaded_session.plan.model.name == original_session.plan.model.name
 
     def test_mosaic_startup_with_no_existing_sessions(self, temp_state_dir):
@@ -1033,4 +1094,251 @@ class TestHeartbeatStateManagerReadWrite:
         assert loaded_receive_status.connection_status == receive_status.connection_status
         assert loaded_receive_status.stats_payload == receive_status.stats_payload
         assert loaded_receive_status.delay == receive_status.delay
+
+
+class TestLazyModelLoading:
+    """Test that Model objects are not persisted with Sessions/Plans and are loaded lazily."""
+
+    def test_model_objects_not_saved_with_session(self, temp_state_dir):
+        """Test that Model objects are not saved when Sessions are persisted."""
+        config = create_test_config_with_state(state_dir=temp_state_dir)
+        manager = SessionStateManager(config)
+        
+        # Create a model and save it separately
+        model = Model(name="test_model", model_type=ModelType.CNN, id="model-123")
+        save_state(config, [model], StateIdentifiers.MODELS)
+        
+        # Create a session with the model
+        plan = Plan(
+            stats_data=[{"host": "node1"}],
+            distribution_plan=[{"host": "node1", "allocated_samples": 10}],
+            model=model,
+        )
+        session = Session(plan=plan, model=model)
+        
+        # Add session (should save only model_id, not Model object)
+        manager.add_session(session)
+        
+        # Read the raw pickle file to verify Model objects are not in it
+        import pickle
+        sessions_file = temp_state_dir / "sessions.pkl"
+        assert sessions_file.exists()
+        
+        with open(sessions_file, "rb") as f:
+            loaded_data = pickle.load(f)
+        
+        # Verify it's a list of sessions
+        assert isinstance(loaded_data, list)
+        assert len(loaded_data) == 1
+        
+        loaded_session = loaded_data[0]
+        # Verify model_id is present
+        assert hasattr(loaded_session, 'model_id')
+        assert loaded_session.model_id == "model-123"
+        # Verify Model object is NOT present (should be None)
+        assert loaded_session._model is None
+        assert loaded_session.model is None  # Should be None without loader
+        
+        # Verify plan also has model_id but not Model object
+        assert hasattr(loaded_session.plan, 'model_id')
+        assert loaded_session.plan.model_id == "model-123"
+        assert loaded_session.plan._model is None
+        assert loaded_session.plan.model is None  # Should be None without loader
+
+    def test_model_id_preserved_when_saving(self, temp_state_dir):
+        """Test that model_id is correctly preserved when saving Sessions."""
+        config = create_test_config_with_state(state_dir=temp_state_dir)
+        manager = SessionStateManager(config)
+        
+        # Create models with specific IDs
+        model1 = Model(name="model1", model_type=ModelType.CNN, id="model-id-1")
+        model2 = Model(name="model2", model_type=ModelType.TRANSFORMER, id="model-id-2")
+        save_state(config, [model1, model2], StateIdentifiers.MODELS)
+        
+        # Create sessions with models
+        plan1 = Plan(
+            stats_data=[{"host": "node1"}],
+            distribution_plan=[{"host": "node1", "allocated_samples": 10}],
+            model=model1,
+        )
+        plan2 = Plan(
+            stats_data=[{"host": "node2"}],
+            distribution_plan=[{"host": "node2", "allocated_samples": 20}],
+            model=model2,
+        )
+        session1 = Session(plan=plan1, model=model1)
+        session2 = Session(plan=plan2, model=model2)
+        
+        manager.add_session(session1)
+        manager.add_session(session2)
+        
+        # Create new manager to load from disk
+        def model_loader(model_id: str) -> Optional[Model]:
+            models = read_state(config, StateIdentifiers.MODELS, default=[])
+            for m in models:
+                if m.id == model_id:
+                    return m
+            return None
+        
+        manager2 = SessionStateManager(config, model_loader=model_loader)
+        loaded_sessions = manager2.get_sessions()
+        
+        # Verify model_ids are preserved
+        assert len(loaded_sessions) == 2
+        assert loaded_sessions[0].model_id == "model-id-1"
+        assert loaded_sessions[0].plan.model_id == "model-id-1"
+        assert loaded_sessions[1].model_id == "model-id-2"
+        assert loaded_sessions[1].plan.model_id == "model-id-2"
+
+    def test_models_loaded_lazily_when_accessed(self, temp_state_dir):
+        """Test that Model objects are loaded lazily only when accessed."""
+        config = create_test_config_with_state(state_dir=temp_state_dir)
+        
+        # Create and save a model
+        model = Model(name="test_model", model_type=ModelType.CNN, id="model-456")
+        save_state(config, [model], StateIdentifiers.MODELS)
+        
+        # Create a session with the model
+        plan = Plan(
+            stats_data=[{"host": "node1"}],
+            distribution_plan=[{"host": "node1", "allocated_samples": 10}],
+            model=model,
+        )
+        session = Session(plan=plan, model=model)
+        
+        # Save session
+        manager = SessionStateManager(config)
+        manager.add_session(session)
+        
+        # Track model loader calls
+        loader_calls = []
+        
+        def tracked_model_loader(model_id: str) -> Optional[Model]:
+            loader_calls.append(model_id)
+            models = read_state(config, StateIdentifiers.MODELS, default=[])
+            for m in models:
+                if m.id == model_id:
+                    return m
+            return None
+        
+        # Create new manager with tracked loader
+        manager2 = SessionStateManager(config, model_loader=tracked_model_loader)
+        loaded_sessions = manager2.get_sessions()
+        
+        # Initially, loader should not have been called
+        assert len(loader_calls) == 0
+        assert loaded_sessions[0]._model is None
+        assert loaded_sessions[0].plan._model is None
+        
+        # Access session.model - should trigger lazy load
+        loaded_model = loaded_sessions[0].model
+        assert len(loader_calls) == 1
+        assert loader_calls[0] == "model-456"
+        assert loaded_model is not None
+        assert loaded_model.id == "model-456"
+        assert loaded_model.name == "test_model"
+        
+        # Access plan.model - should trigger lazy load
+        plan_model = loaded_sessions[0].plan.model
+        assert len(loader_calls) == 2  # Called again for plan
+        assert plan_model is not None
+        assert plan_model.id == "model-456"
+        
+        # Accessing again should not call loader (cached)
+        cached_model = loaded_sessions[0].model
+        assert len(loader_calls) == 2  # No new call
+        assert cached_model is loaded_model  # Same object
+
+    def test_model_binaries_saved_separately(self, temp_state_dir):
+        """Test that model binaries are saved separately and not in session state."""
+        from pathlib import Path
+        
+        config = create_test_config_with_state(state_dir=temp_state_dir)
+        models_dir = Path(temp_state_dir) / "models"
+        models_dir.mkdir(exist_ok=True)
+        config.models_location = str(models_dir)
+        
+        # Create a model with binary data
+        model_binary = b"fake_onnx_model_binary_data_12345"
+        model = Model(
+            name="test_model",
+            model_type=ModelType.CNN,
+            id="model-789",
+            binary_rep=model_binary,
+        )
+        
+        # Save model (this should save binary to models_location)
+        from mosaic.mosaic import add_model
+        import mosaic.mosaic as mosaic_module
+        
+        with patch("mosaic.mosaic._config", config):
+            with patch("mosaic.mosaic._models", []):
+                add_model(model)
+        
+        # Verify model binary was saved to models directory
+        # add_model saves using sanitized model name and sets file_name to that name
+        # The sanitized name for "test_model" is "test_model"
+        assert model.file_name is not None, "add_model should set file_name"
+        model_file = models_dir / model.file_name
+        assert model_file.exists(), f"Model file should exist at {model_file}. File name was set to: {model.file_name}"
+        with open(model_file, "rb") as f:
+            saved_binary = f.read()
+        assert saved_binary == model_binary
+        
+        # Create a session with the model
+        plan = Plan(
+            stats_data=[{"host": "node1"}],
+            distribution_plan=[{"host": "node1", "allocated_samples": 10}],
+            model=model,
+        )
+        session = Session(plan=plan, model=model)
+        
+        # Save session
+        manager = SessionStateManager(config)
+        manager.add_session(session)
+        
+        # Verify session pickle file does NOT contain model binary
+        import pickle
+        sessions_file = temp_state_dir / "sessions.pkl"
+        with open(sessions_file, "rb") as f:
+            sessions_data = pickle.load(f)
+        
+        # Check that model binary is not in the pickle data
+        sessions_str = str(sessions_data)
+        # The binary data should not appear in the sessions file
+        assert b"fake_onnx_model_binary_data" not in pickle.dumps(sessions_data)
+        
+        # Verify model_id is present
+        assert sessions_data[0].model_id == "model-789"
+        assert sessions_data[0].plan.model_id == "model-789"
+
+    def test_model_loader_returns_none_for_invalid_id(self, temp_state_dir):
+        """Test that model loader returns None for invalid model IDs."""
+        config = create_test_config_with_state(state_dir=temp_state_dir)
+        
+        # Create a session with a model ID that doesn't exist
+        plan = Plan(
+            stats_data=[{"host": "node1"}],
+            distribution_plan=[{"host": "node1", "allocated_samples": 10}],
+            model_id="non-existent-model-id",
+        )
+        session = Session(plan=plan, model_id="non-existent-model-id")
+        
+        # Save session
+        manager = SessionStateManager(config)
+        manager.add_session(session)
+        
+        # Create model loader that returns None for invalid IDs
+        def model_loader(model_id: str) -> Optional[Model]:
+            return None  # Model not found
+        
+        # Load session
+        manager2 = SessionStateManager(config, model_loader=model_loader)
+        loaded_sessions = manager2.get_sessions()
+        
+        # Accessing model should return None
+        assert loaded_sessions[0].model is None
+        assert loaded_sessions[0].plan.model is None
+        assert loaded_sessions[0].model_id == "non-existent-model-id"
+        assert loaded_sessions[0].plan.model_id == "non-existent-model-id"
 

@@ -205,9 +205,102 @@ class Plan:
 
     stats_data: List[Dict[str, Any]]  # Result of beacon.collect_stats()
     distribution_plan: List[Dict[str, Any]]  # Result of calculate_data_distribution call
-    model: Model # for convenience, the model is included in the plan and is set when the plan is created
+    model_id: Optional[str] = None  # ID of the model (Model objects are not persisted, loaded lazily)
     data_segmentation_plan: Optional[List[Dict[str, Any]]] = None  # Plan for data sharding across machines
     id: str = field(default_factory=lambda: str(uuid.uuid4()))  # Unique identifier
+    _model: Optional[Model] = field(default=None, init=False, repr=False)  # Lazy-loaded model
+    _model_loader: Optional[Any] = field(default=None, init=False, repr=False)  # Function to load model by ID
+    
+    def __init__(
+        self,
+        stats_data: List[Dict[str, Any]],
+        distribution_plan: List[Dict[str, Any]],
+        model: Optional[Model] = None,
+        model_id: Optional[str] = None,
+        data_segmentation_plan: Optional[List[Dict[str, Any]]] = None,
+        id: Optional[str] = None,
+    ):
+        """
+        Initialize Plan instance.
+        
+        Args:
+            stats_data: Result of beacon.collect_stats()
+            distribution_plan: Result of calculate_data_distribution call
+            model: Model instance (if provided, model_id will be extracted from it)
+            model_id: Model ID (required if model is not provided)
+            data_segmentation_plan: Optional plan for data sharding
+            id: Optional unique identifier
+        """
+        self.stats_data = stats_data
+        self.distribution_plan = distribution_plan
+        self.data_segmentation_plan = data_segmentation_plan
+        self.id = id if id is not None else str(uuid.uuid4())
+        self._model = None
+        self._model_loader = None
+        
+        if model is not None:
+            self._model = model
+            self.model_id = model.id
+        elif model_id is not None:
+            self.model_id = model_id
+        else:
+            raise ValueError("Either model or model_id must be provided")
+    
+    @property
+    def model(self) -> Optional[Model]:
+        """
+        Get the model, loading it lazily if necessary.
+        
+        Returns:
+            Model instance if available, None if model_id is invalid
+        """
+        if self._model is not None:
+            return self._model
+        
+        # Try to load model lazily if loader is available
+        if self._model_loader is not None:
+            try:
+                self._model = self._model_loader(self.model_id)
+                return self._model
+            except Exception:
+                return None
+        
+        return None
+    
+    @model.setter
+    def model(self, value: Optional[Model]) -> None:
+        """Set the model and update model_id."""
+        self._model = value
+        if value is not None:
+            self.model_id = value.id
+        else:
+            self.model_id = ""
+    
+    def __getstate__(self) -> Dict[str, Any]:
+        """Custom pickle state - exclude Model objects."""
+        # Ensure model_id is set from model if model is present but model_id is not
+        model_id = self.model_id
+        if model_id is None and self._model is not None:
+            model_id = self._model.id
+        
+        state = {
+            'stats_data': self.stats_data,
+            'distribution_plan': self.distribution_plan,
+            'model_id': model_id,
+            'data_segmentation_plan': self.data_segmentation_plan,
+            'id': self.id,
+        }
+        return state
+    
+    def __setstate__(self, state: Dict[str, Any]) -> None:
+        """Custom unpickle state - Model objects are not loaded."""
+        self.stats_data = state['stats_data']
+        self.distribution_plan = state['distribution_plan']
+        self.model_id = state['model_id']
+        self.data_segmentation_plan = state.get('data_segmentation_plan')
+        self.id = state['id']
+        self._model = None
+        self._model_loader = None
 
 
 @dataclass
@@ -216,17 +309,20 @@ class Session:
 
     plan: Plan
     data: Optional["Data"] = None
-    model: Optional["Model"] = None
+    model_id: Optional[str] = None  # ID of the model (Model objects are not persisted, loaded lazily)
     time_started: int = field(init=False)  # Millis since epoch
     time_ended: int = -1  # Millis since epoch, -1 means not finished
     status: SessionStatus = SessionStatus.IDLE  # Session status
     id: str = field(default_factory=lambda: str(uuid.uuid4()))  # Unique identifier
+    _model: Optional["Model"] = field(default=None, init=False, repr=False)  # Lazy-loaded model
+    _model_loader: Optional[Any] = field(default=None, init=False, repr=False)  # Function to load model by ID
 
     def __init__(
         self,
         plan: Plan,
         data: Optional["Data"] = None,
         model: Optional["Model"] = None,
+        model_id: Optional[str] = None,
         time_started: Optional[int] = None,
         time_ended: int = -1,
         status: SessionStatus = SessionStatus.IDLE,
@@ -238,7 +334,8 @@ class Session:
         Args:
             plan: Plan instance
             data: Optional Data instance associated with this session
-            model: Optional Model instance associated with this session
+            model: Optional Model instance (if provided, model_id will be extracted from it)
+            model_id: Optional Model ID (used if model is not provided)
             time_started: Optional start time in millis since epoch. Defaults to current time.
             time_ended: End time in millis since epoch. Defaults to -1 (not finished).
             status: Session status. Defaults to SessionStatus.IDLE.
@@ -246,11 +343,86 @@ class Session:
         """
         self.plan = plan
         self.data = data
-        self.model = model
         self.time_started = time_started if time_started is not None else int(time.time() * 1000)
         self.time_ended = time_ended
         self.status = status
         self.id = id if id is not None else str(uuid.uuid4())
+        self._model = None
+        self._model_loader = None
+        
+        if model is not None:
+            self._model = model
+            self.model_id = model.id
+        elif model_id is not None:
+            self.model_id = model_id
+        else:
+            # If no model provided, try to get model_id from plan
+            self.model_id = plan.model_id if hasattr(plan, 'model_id') else None
+    
+    @property
+    def model(self) -> Optional["Model"]:
+        """
+        Get the model, loading it lazily if necessary.
+        
+        Returns:
+            Model instance if available, None if model_id is invalid
+        """
+        if self._model is not None:
+            return self._model
+        
+        # Try to load model lazily if loader is available
+        if self._model_loader is not None and self.model_id is not None:
+            try:
+                self._model = self._model_loader(self.model_id)
+                return self._model
+            except Exception:
+                return None
+        
+        return None
+    
+    @model.setter
+    def model(self, value: Optional["Model"]) -> None:
+        """Set the model and update model_id."""
+        self._model = value
+        if value is not None:
+            self.model_id = value.id
+        else:
+            self.model_id = None
+    
+    def __getstate__(self) -> Dict[str, Any]:
+        """Custom pickle state - exclude Model objects."""
+        # Ensure model_id is set from model if model is present but model_id is not
+        model_id = self.model_id
+        if model_id is None and self._model is not None:
+            model_id = self._model.id
+        
+        state = {
+            'plan': self.plan,
+            'data': self.data,
+            'model_id': model_id,
+            'time_started': self.time_started,
+            'time_ended': self.time_ended,
+            'status': self.status.value if isinstance(self.status, SessionStatus) else self.status,
+            'id': self.id,
+        }
+        return state
+    
+    def __setstate__(self, state: Dict[str, Any]) -> None:
+        """Custom unpickle state - Model objects are not loaded."""
+        self.plan = state['plan']
+        self.data = state.get('data')
+        self.model_id = state.get('model_id')
+        self.time_started = state['time_started']
+        self.time_ended = state.get('time_ended', -1)
+        # Handle status - could be enum value or enum
+        status_val = state.get('status', SessionStatus.IDLE.value)
+        if isinstance(status_val, str):
+            self.status = SessionStatus(status_val)
+        else:
+            self.status = status_val
+        self.id = state['id']
+        self._model = None
+        self._model_loader = None
 
 
 @dataclass
