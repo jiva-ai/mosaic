@@ -1096,6 +1096,275 @@ class TestHeartbeatStateManagerReadWrite:
         assert loaded_receive_status.delay == receive_status.delay
 
 
+class TestModelIdAsFilename:
+    """Test that models are saved with their ID as the filename."""
+
+    def test_model_saved_with_id_as_filename(self, temp_state_dir):
+        """Test that when a model is saved, it uses the model ID as the filename."""
+        from pathlib import Path
+        from mosaic.mosaic import add_model
+        import mosaic.mosaic as mosaic_module
+        
+        config = create_test_config_with_state(state_dir=temp_state_dir)
+        models_dir = Path(temp_state_dir) / "models"
+        models_dir.mkdir(exist_ok=True)
+        config.models_location = str(models_dir)
+        
+        # Create a model with binary data
+        model_binary = b"fake_onnx_model_binary_data_12345"
+        model = Model(
+            name="test_model",
+            model_type=ModelType.CNN,
+            binary_rep=model_binary,
+        )
+        # Model should have an ID (from default_factory)
+        assert model.id is not None
+        assert len(model.id) > 0
+        
+        # Save model
+        with patch("mosaic.mosaic._config", config):
+            with patch("mosaic.mosaic._models", []):
+                add_model(model)
+        
+        # Verify model binary was saved using model ID as filename
+        model_file = models_dir / model.id
+        assert model_file.exists(), f"Model file should exist at {model_file} using model ID {model.id}"
+        
+        # Verify file_name was set to model ID
+        assert model.file_name == model.id
+        
+        # Verify binary content matches
+        with open(model_file, "rb") as f:
+            saved_binary = f.read()
+        assert saved_binary == model_binary
+
+    def test_model_id_initialized_on_creation(self):
+        """Test that a new Model object is initialized with a random UUID."""
+        model1 = Model(name="test_model_1", model_type=ModelType.CNN)
+        model2 = Model(name="test_model_2", model_type=ModelType.TRANSFORMER)
+        
+        # Both should have IDs
+        assert model1.id is not None
+        assert model2.id is not None
+        
+        # IDs should be different
+        assert model1.id != model2.id
+        
+        # IDs should be valid UUID strings
+        import uuid
+        try:
+            uuid.UUID(model1.id)
+            uuid.UUID(model2.id)
+        except ValueError:
+            assert False, "Model IDs should be valid UUIDs"
+
+    def test_model_id_preserved_when_deserialized(self, temp_state_dir):
+        """Test that model ID is preserved when deserialized from pickle."""
+        import pickle
+        
+        config = create_test_config_with_state(state_dir=temp_state_dir)
+        
+        # Create a model with a specific ID
+        original_id = "test-model-id-12345"
+        model = Model(
+            name="test_model",
+            model_type=ModelType.CNN,
+            id=original_id,
+        )
+        
+        # Serialize and deserialize
+        pickled = pickle.dumps(model)
+        unpickled = pickle.loads(pickled)
+        
+        # ID should be preserved
+        assert unpickled.id == original_id
+
+    def test_model_file_name_uses_id_when_not_set(self, temp_state_dir):
+        """Test that file_name defaults to model ID when not explicitly set."""
+        from pathlib import Path
+        from mosaic.mosaic import add_model
+        import mosaic.mosaic as mosaic_module
+        
+        config = create_test_config_with_state(state_dir=temp_state_dir)
+        models_dir = Path(temp_state_dir) / "models"
+        models_dir.mkdir(exist_ok=True)
+        config.models_location = str(models_dir)
+        
+        # Create a model without setting file_name
+        model = Model(
+            name="test_model",
+            model_type=ModelType.CNN,
+            binary_rep=b"test_binary_data",
+        )
+        
+        # Save model
+        with patch("mosaic.mosaic._config", config):
+            with patch("mosaic.mosaic._models", []):
+                add_model(model)
+        
+        # file_name should be set to model ID
+        assert model.file_name == model.id
+        
+        # File should exist with model ID as name
+        model_file = models_dir / model.id
+        assert model_file.exists()
+
+
+class TestModelSharding:
+    """Test that model distribution plans assign different shard numbers to different receivers."""
+
+    def test_model_sharding_assigns_different_shard_numbers(self, temp_state_dir):
+        """Test that when a model distribution plan is executed, different receivers get different shard numbers."""
+        from pathlib import Path
+        from unittest.mock import MagicMock, call
+        from mosaic_comms.beacon import Beacon
+        from mosaic_config.state import Plan, Session, SessionStatus
+        
+        config = create_test_config_with_state(
+            state_dir=temp_state_dir,
+            host="127.0.0.1",
+            heartbeat_port=7000,
+            comms_port=7001,
+            heartbeat_frequency=2,
+            heartbeat_tolerance=5,
+            heartbeat_wait_timeout=2,
+            stats_request_timeout=10,
+            server_crt="",
+            server_key="",
+            ca_crt="",
+            models_location=str(temp_state_dir / "models"),
+        )
+        
+        # Create a model
+        model = Model(
+            name="test_model",
+            model_type=ModelType.CNN,
+            binary_rep=b"fake_model_binary_data",
+            id="original-model-id-123",
+        )
+        
+        # Create a plan with distribution to 2 different nodes
+        distribution_plan = [
+            {"host": "192.168.1.10", "comms_port": 8001, "allocated_samples": 10},
+            {"host": "192.168.1.11", "comms_port": 8002, "allocated_samples": 20},
+        ]
+        
+        plan = Plan(
+            stats_data=[{"host": "node1"}],
+            distribution_plan=distribution_plan,
+            model=model,
+        )
+        
+        session = Session(plan=plan, status=SessionStatus.TRAINING)
+        
+        # Create beacon and mock send_command
+        with patch("mosaic_comms.beacon.StatsCollector") as mock_stats_class:
+            mock_stats = MagicMock()
+            mock_stats.get_last_stats_json.return_value = '{"cpu_percent": 45.3}'
+            mock_stats_class.return_value = mock_stats
+            
+            beacon = Beacon(config)
+            
+            # Mock send_command to capture the models being sent
+            received_models = []
+            
+            def mock_send_command(host, port, command, payload, timeout=None):
+                if command == "exmplan":
+                    # Deserialize the model to check its ID
+                    import gzip
+                    import pickle
+                    pickled = gzip.decompress(payload)
+                    received_model = pickle.loads(pickled)
+                    received_models.append({
+                        "host": host,
+                        "port": port,
+                        "model": received_model,
+                    })
+                    return {"status": "success"}
+                return None
+            
+            beacon.send_command = MagicMock(side_effect=mock_send_command)
+            beacon._is_self_host = MagicMock(return_value=False)  # All nodes are remote
+            
+            # Execute model plan
+            beacon.execute_model_plan(session, model)
+            
+            # Verify that 2 models were sent
+            assert len(received_models) == 2, "Should send models to 2 different nodes"
+            
+            # Verify that each received model has a different shard number in its ID
+            model_ids = [rm["model"].id for rm in received_models]
+            assert model_ids[0] != model_ids[1], "Model IDs should be different for different shards"
+            
+            # Verify that model IDs follow the pattern: original_id-<shard_number>
+            assert model_ids[0] == f"{model.id}-0", f"First shard should have ID {model.id}-0, got {model_ids[0]}"
+            assert model_ids[1] == f"{model.id}-1", f"Second shard should have ID {model.id}-1, got {model_ids[1]}"
+            
+            # Verify that file_names also include shard numbers
+            file_names = [rm["model"].file_name for rm in received_models]
+            assert file_names[0] == f"{model.id}-0", f"First shard file_name should be {model.id}-0, got {file_names[0]}"
+            assert file_names[1] == f"{model.id}-1", f"Second shard file_name should be {model.id}-1, got {file_names[1]}"
+            
+            # Verify that distribution_plan was updated with shard information
+            assert plan.distribution_plan[0].get("shard_number") == 0
+            assert plan.distribution_plan[0].get("model_id") == f"{model.id}-0"
+            assert plan.distribution_plan[0].get("model_file_name") == f"{model.id}-0"
+            assert plan.distribution_plan[1].get("shard_number") == 1
+            assert plan.distribution_plan[1].get("model_id") == f"{model.id}-1"
+            assert plan.distribution_plan[1].get("model_file_name") == f"{model.id}-1"
+            
+            # Verify that different hosts received different shards
+            assert received_models[0]["host"] == "192.168.1.10"
+            assert received_models[1]["host"] == "192.168.1.11"
+            
+            # Verify send_command was called with correct hosts
+            assert beacon.send_command.call_count == 2
+            calls = beacon.send_command.call_args_list
+            assert calls[0][1]["host"] == "192.168.1.10"
+            assert calls[1][1]["host"] == "192.168.1.11"
+            
+            # Verify that model names and other attributes are preserved
+            assert received_models[0]["model"].name == model.name
+            assert received_models[1]["model"].name == model.name
+            assert received_models[0]["model"].model_type == model.model_type
+            assert received_models[1]["model"].model_type == model.model_type
+
+    def test_shard_number_format_preserved_in_filename(self):
+        """Test that shard number format (model_id-<shard_number>) is preserved in file_name."""
+        # Create a model with a UUID-style ID
+        model_id = "550e8400-e29b-41d4-a716-446655440000"
+        model = Model(
+            name="test_model",
+            model_type=ModelType.CNN,
+            id=model_id,
+        )
+        
+        # Create a sharded model with shard number
+        shard_number = 0
+        sharded_model = Model(
+            name=model.name,
+            model_type=model.model_type,
+            id=f"{model_id}-{shard_number}",
+            file_name=f"{model_id}-{shard_number}",
+        )
+        
+        # Verify that the hyphen and shard number are preserved
+        assert sharded_model.file_name == f"{model_id}-{shard_number}"
+        assert sharded_model.id == f"{model_id}-{shard_number}"
+        
+        # Test with different shard numbers
+        for shard_num in [1, 2, 10, 99]:
+            sharded = Model(
+                name=model.name,
+                model_type=model.model_type,
+                id=f"{model_id}-{shard_num}",
+                file_name=f"{model_id}-{shard_num}",
+            )
+            assert sharded.file_name == f"{model_id}-{shard_num}"
+            assert sharded.id == f"{model_id}-{shard_num}"
+
+
+
 class TestLazyModelLoading:
     """Test that Model objects are not persisted with Sessions/Plans and are loaded lazily."""
 

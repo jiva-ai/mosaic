@@ -2774,24 +2774,27 @@ class TestBeaconCollectStats:
                 assert added_model.model_type == model.model_type, "Model type should match"
                 
                 # Verify model was saved to disk
-                # add_model saves to models_location/onnx_location/sanitized_name
-                # where sanitized_name comes from _sanitize_filename(model.name)
-                # The file_name field is set by add_model to the sanitized name
+                # add_model saves to models_location/onnx_location/model.id
+                # The file_name field is set by add_model to model.id (if not already set)
                 assert added_model.file_name is not None, "file_name should be set by add_model"
                 
-                # Construct expected file path based on how add_model saves it
-                # add_model uses _sanitize_filename(model.name), not model.file_name
-                from mosaic.mosaic import _sanitize_filename
-                sanitized_name = _sanitize_filename(model.name)
-                
-                # Verify that added_model.file_name matches the sanitized name
-                assert added_model.file_name == sanitized_name, f"file_name should be sanitized: expected {sanitized_name}, got {added_model.file_name}"
-                
-                # Build the expected file path
-                if model.onnx_location:
-                    expected_file = test_models_dir / model.onnx_location / sanitized_name
+                # Verify that added_model.file_name is set correctly
+                # add_model uses model.id as filename if file_name is None
+                # If file_name was already set (e.g., for sharded models), it should be preserved (after sanitization)
+                if model.file_name is not None:
+                    # If model already had file_name set, it should be preserved (after sanitization)
+                    from mosaic_config.state import Model as StateModel
+                    expected_file_name = StateModel._sanitize_filename(model.file_name)
+                    assert added_model.file_name == expected_file_name, f"file_name should be sanitized version of original: expected {expected_file_name}, got {added_model.file_name}"
                 else:
-                    expected_file = test_models_dir / sanitized_name
+                    # Otherwise, file_name should be set to model.id
+                    assert added_model.file_name == model.id, f"file_name should be model.id: expected {model.id}, got {added_model.file_name}"
+                
+                # Build the expected file path using the actual file_name
+                if model.onnx_location:
+                    expected_file = test_models_dir / model.onnx_location / added_model.file_name
+                else:
+                    expected_file = test_models_dir / added_model.file_name
                 
                 # Debug: list all files if assertion fails
                 if not expected_file.exists():
@@ -2948,19 +2951,20 @@ class TestBeaconCollectStats:
                 assert received_model.model_type == ModelType.TRANSFORMER, "Model type should match"
                 
                 # Verify model was saved to disk on receiver
-                # add_model saves to models_location/onnx_location/sanitized_name
-                # where sanitized_name comes from _sanitize_filename(model.name)
-                from mosaic.mosaic import _sanitize_filename
-                sanitized_name = _sanitize_filename(model.name)
+                # add_model saves to models_location/onnx_location/model.id
+                # For sharded models (from execute_model_plan), file_name will be model.id-<shard_number>
+                assert received_model.file_name is not None, "file_name should be set by add_model"
                 
-                # Verify that received_model.file_name matches the sanitized name
-                assert received_model.file_name == sanitized_name, f"file_name should be sanitized: expected {sanitized_name}, got {received_model.file_name}"
+                # For sharded models from execute_model_plan, file_name should be model.id-0 (first shard)
+                # The model ID should also be updated to include shard number
+                assert received_model.file_name == received_model.id, f"file_name should match model.id: expected {received_model.id}, got {received_model.file_name}"
+                assert received_model.id == f"{model.id}-0", f"Sharded model ID should be {model.id}-0, got {received_model.id}"
                 
-                # Build the expected file path
+                # Build the expected file path using the actual file_name
                 if model.onnx_location:
-                    expected_file = receiver_models_dir / model.onnx_location / sanitized_name
+                    expected_file = receiver_models_dir / model.onnx_location / received_model.file_name
                 else:
-                    expected_file = receiver_models_dir / sanitized_name
+                    expected_file = receiver_models_dir / received_model.file_name
                 
                 assert expected_file.exists(), f"Model file should be saved to {expected_file}"
                 

@@ -1473,18 +1473,8 @@ class Beacon:
             except Exception as e:
                 raise ValueError(f"Error reading model file {model_file}: {e}")
         
-        # Serialize model for transmission
-        try:
-            # Pickle the model
-            pickled_model = pickle.dumps(model)
-            # Compress it
-            serialized_model = gzip.compress(pickled_model)
-        except Exception as e:
-            logger.error(f"Error serializing model: {e}")
-            return
-        
-        # Send to each machine in distribution_plan
-        for machine_info in plan.distribution_plan:
+        # Send to each machine in distribution_plan with shard numbers
+        for shard_number, machine_info in enumerate(plan.distribution_plan):
             host = machine_info.get("host")
             comms_port = machine_info.get("comms_port")
             
@@ -1492,40 +1482,65 @@ class Beacon:
                 logger.warning(f"Invalid distribution plan entry: missing host or comms_port")
                 continue
             
+            # Create a sharded model copy for this node
+            # For sharded models, update the model ID and file_name to include shard number
+            sharded_model = Model(
+                name=model.name,
+                model_type=model.model_type,
+                onnx_location=model.onnx_location,
+                binary_rep=model.binary_rep,
+                file_name=f"{model.id}-{shard_number}",  # Use model.id-<shard_number> as filename
+                trained=model.trained,
+                id=f"{model.id}-{shard_number}",  # Update model ID to include shard number
+            )
+            
+            # Update distribution_plan entry to include shard information
+            machine_info["shard_number"] = shard_number
+            machine_info["model_id"] = sharded_model.id
+            machine_info["model_file_name"] = sharded_model.file_name
+            
+            # Serialize sharded model for transmission
+            try:
+                pickled_model = pickle.dumps(sharded_model)
+                serialized_sharded_model = gzip.compress(pickled_model)
+            except Exception as e:
+                logger.error(f"Error serializing sharded model: {e}")
+                continue
+            
             # Send to node (or call handler directly if self)
             if self._is_self_host(host, comms_port):
                 # Call handler directly
                 try:
-                    logger.info(f"Executing model plan locally for {host}:{comms_port}")
-                    self._handle_execute_model_plan(serialized_model)
+                    logger.info(f"Executing model plan locally for {host}:{comms_port} (shard {shard_number})")
+                    self._handle_execute_model_plan(serialized_sharded_model)
                 except Exception as e:
                     logger.error(f"Error executing model plan locally: {e}")
             else:
                 # Send to remote node
                 try:
-                    data_size_bytes = len(serialized_model)
+                    data_size_bytes = len(serialized_sharded_model)
                     chunk_size_mb = self.config.data_chunk_size
                     chunk_size_bytes = chunk_size_mb * 1024 * 1024
                     
                     if data_size_bytes <= chunk_size_bytes:
                         # Small enough to send in one chunk
-                        logger.info(f"Sending model to {host}:{comms_port} (single chunk, {data_size_bytes / 1024 / 1024:.2f} MB)")
+                        logger.info(f"Sending model shard {shard_number} to {host}:{comms_port} (single chunk, {data_size_bytes / 1024 / 1024:.2f} MB)")
                         result = self.send_command(
                             host=host,
                             port=comms_port,
                             command="exmplan",
-                            payload=serialized_model,
+                            payload=serialized_sharded_model,
                             timeout=300.0,  # Longer timeout for model transfer
                         )
                         if result is None:
                             logger.warning(f"No response from {host}:{comms_port} for model plan")
                     else:
                         # Need to chunk (similar to data plan)
-                        chunks = chunk_data(serialized_model, chunk_size_mb)
+                        chunks = chunk_data(serialized_sharded_model, chunk_size_mb)
                         chunk_id = str(uuid.uuid4())
                         total_chunks = len(chunks)
                         
-                        logger.info(f"Sending model to {host}:{comms_port} in {total_chunks} chunks (chunk_id: {chunk_id})")
+                        logger.info(f"Sending model shard {shard_number} to {host}:{comms_port} in {total_chunks} chunks (chunk_id: {chunk_id})")
                         
                         # Send each chunk
                         for chunk_index, chunk in enumerate(chunks):

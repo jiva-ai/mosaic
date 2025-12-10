@@ -334,39 +334,42 @@ def add_model(model: Model) -> None:
     
     # If model has binary_rep, save it to disk
     if model.binary_rep is not None:
-        if _config is None:
-            logger.warning("Cannot save model binary: config not initialized")
-        elif not _config.models_location:
-            logger.warning("Cannot save model binary: models_location not configured")
-        else:
-            try:
-                # Sanitize the model name for use as filename
-                sanitized_name = _sanitize_filename(model.name)
-                
-                # Determine the save location
-                models_path = Path(_config.models_location)
-                if model.onnx_location:
-                    # Save to models_location/onnx_location
-                    save_dir = models_path / model.onnx_location
-                else:
-                    # Save directly to models_location
-                    save_dir = models_path
-                
-                # Ensure directory exists
-                save_dir.mkdir(parents=True, exist_ok=True)
-                
-                # Save the binary data
-                file_path = save_dir / sanitized_name
-                with open(file_path, 'wb') as f:
-                    f.write(model.binary_rep)
-                
-                # Update model: set file_name and clear binary_rep
-                model.file_name = sanitized_name
-                model.binary_rep = None
-                
-                logger.debug(f"Saved model binary to {file_path}")
-            except Exception as e:
-                logger.warning(f"Failed to save model binary: {e}")
+            if _config is None:
+                logger.warning("Cannot save model binary: config not initialized")
+            elif not _config.models_location:
+                logger.warning("Cannot save model binary: models_location not configured")
+            else:
+                try:
+                    # Use model ID as filename if file_name is not already set
+                    # For sharded models, file_name may already be set to model_id.<shard_number>
+                    if model.file_name is None:
+                        # Use model ID as the filename
+                        model.file_name = model.id
+                    # If file_name is already set (e.g., for sharded models), use it as-is
+                    
+                    # Determine the save location
+                    models_path = Path(_config.models_location)
+                    if model.onnx_location:
+                        # Save to models_location/onnx_location
+                        save_dir = models_path / model.onnx_location
+                    else:
+                        # Save directly to models_location
+                        save_dir = models_path
+                    
+                    # Ensure directory exists
+                    save_dir.mkdir(parents=True, exist_ok=True)
+                    
+                    # Save the binary data
+                    file_path = save_dir / model.file_name
+                    with open(file_path, 'wb') as f:
+                        f.write(model.binary_rep)
+                    
+                    # Clear binary_rep to conserve memory
+                    model.binary_rep = None
+                    
+                    logger.debug(f"Saved model binary to {file_path}")
+                except Exception as e:
+                    logger.warning(f"Failed to save model binary: {e}")
     
     _models.append(model)
     _save_models_state()

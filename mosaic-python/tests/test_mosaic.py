@@ -720,13 +720,13 @@ class TestAddRemoveModel:
                 # Verify binary was cleared from model
                 assert mosaic_module._models[0].binary_rep is None
 
-                # Verify file_name was set
-                assert mosaic_module._models[0].file_name == "test_model"
+                # Verify file_name was set to model.id
+                assert mosaic_module._models[0].file_name == model.id, f"file_name should be model.id: expected {model.id}, got {mosaic_module._models[0].file_name}"
 
-                # Verify file was saved to disk
+                # Verify file was saved to disk using model.id as filename
                 models_dir = Path(config.models_location)
-                saved_file = models_dir / "test_model"
-                assert saved_file.exists(), "Model file should be saved to disk"
+                saved_file = models_dir / model.id
+                assert saved_file.exists(), f"Model file should be saved to disk at {saved_file} using model.id"
 
                 # Verify file content matches original binary
                 with open(saved_file, 'rb') as f:
@@ -761,10 +761,10 @@ class TestAddRemoveModel:
                 # Add model
                 add_model(model)
 
-                # Verify file was saved to onnx_location subdirectory
+                # Verify file was saved to onnx_location subdirectory using model.id
                 models_dir = Path(config.models_location)
-                saved_file = models_dir / "onnx_models" / "test_model"
-                assert saved_file.exists(), "Model file should be saved to onnx_location subdirectory"
+                saved_file = models_dir / "onnx_models" / model.id
+                assert saved_file.exists(), f"Model file should be saved to onnx_location subdirectory at {saved_file} using model.id"
 
                 # Verify file content
                 with open(saved_file, 'rb') as f:
@@ -798,13 +798,13 @@ class TestAddRemoveModel:
                 # Add model
                 add_model(model)
 
-                # Verify file_name was set to sanitized version
-                assert mosaic_module._models[0].file_name == "my_model_test_123"
+                # Verify file_name was set to model.id
+                assert mosaic_module._models[0].file_name == model.id, f"file_name should be model.id: expected {model.id}, got {mosaic_module._models[0].file_name}"
 
-                # Verify file was saved with sanitized name
+                # Verify file was saved using model.id as filename
                 models_dir = Path(config.models_location)
-                saved_file = models_dir / "my_model_test_123"
-                assert saved_file.exists(), "Model file should be saved with sanitized name"
+                saved_file = models_dir / model.id
+                assert saved_file.exists(), f"Model file should be saved using model.id at {saved_file}"
 
     def test_remove_model_removes_from_list_and_persists(self, temp_state_dir):
         """Test that remove_model removes a model by name and persists state."""
@@ -956,12 +956,12 @@ class TestModelTransferBetweenBeacons:
                         # Verify binary was stripped from model object
                         assert received_model.binary_rep is None, "Binary should be stripped from model object"
 
-                        # Verify file_name was set
-                        assert received_model.file_name == "transferred_model"
+                        # Verify file_name was set to model.id
+                        assert received_model.file_name == model.id, f"file_name should be model.id: expected {model.id}, got {received_model.file_name}"
 
-                        # Verify file was written to correct location
-                        saved_file = models_dir / "transferred_model"
-                        assert saved_file.exists(), "Model file should be saved to models_location"
+                        # Verify file was written to correct location using model.id
+                        saved_file = models_dir / model.id
+                        assert saved_file.exists(), f"Model file should be saved to models_location at {saved_file} using model.id"
 
                         # Verify file content matches original binary
                         with open(saved_file, 'rb') as f:
@@ -1061,12 +1061,12 @@ class TestModelTransferBetweenBeacons:
                         # Verify original name is preserved
                         assert received_model.name == "my model@test#123"
 
-                        # Verify file_name is sanitized
-                        assert received_model.file_name == "my_model_test_123"
+                        # Verify file_name is set to model.id
+                        assert received_model.file_name == model.id, f"file_name should be model.id: expected {model.id}, got {received_model.file_name}"
 
-                        # Verify file was written with sanitized name
-                        saved_file = models_dir / "my_model_test_123"
-                        assert saved_file.exists(), "Model file should be saved with sanitized name"
+                        # Verify file was written using model.id as filename
+                        saved_file = models_dir / model.id
+                        assert saved_file.exists(), f"Model file should be saved using model.id at {saved_file}"
 
                         # Verify file content
                         with open(saved_file, 'rb') as f:
@@ -1159,9 +1159,11 @@ class TestModelTransferBetweenBeacons:
                         assert response is not None
                         assert response["status"] == "success"
 
-                        # Verify file was written to onnx_location subdirectory
-                        saved_file = models_dir / "onnx_models" / "test_model"
-                        assert saved_file.exists(), "Model file should be saved to onnx_location subdirectory"
+                        # Verify file was written to onnx_location subdirectory using model.id
+                        from mosaic.mosaic import _models
+                        received_model = _models[0]
+                        saved_file = models_dir / "onnx_models" / received_model.id
+                        assert saved_file.exists(), f"Model file should be saved to onnx_location subdirectory at {saved_file} using model.id"
 
                         # Verify file content
                         with open(saved_file, 'rb') as f:

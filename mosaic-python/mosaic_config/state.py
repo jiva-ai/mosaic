@@ -154,12 +154,17 @@ class Model:
     model_type: Optional[ModelType] = None
     onnx_location: Optional[str] = None  # Relative to MosaicConfig's models_location
     binary_rep: Optional[bytes] = None  # ONNX model loaded from onnx_location
-    file_name: Optional[str] = None  # File name of the model (automatically sanitized)
+    file_name: Optional[str] = None  # File name of the model (uses model.id by default, or model.id-<shard_number> for sharded models)
     trained: bool = False  # Whether the model has been trained
     id: str = field(default_factory=lambda: str(uuid.uuid4()))  # Unique identifier
     
     def __post_init__(self):
-        """Sanitize file_name after initialization if it's set."""
+        """Initialize model ID if not set, and sanitize file_name if it's set."""
+        # Ensure model has an ID (will be set by default_factory, but ensure it's set)
+        if not hasattr(self, 'id') or self.id is None:
+            object.__setattr__(self, 'id', str(uuid.uuid4()))
+        
+        # Sanitize file_name after initialization if it's set
         if self.file_name is not None:
             object.__setattr__(self, 'file_name', self._sanitize_filename(self.file_name))
     
@@ -176,6 +181,7 @@ class Model:
         
         Replaces invalid characters (spaces, symbols) with underscores.
         Ensures the filename is valid for filesystems.
+        Preserves hyphens in the middle (e.g., for shard numbers like "model-id-0").
         
         Args:
             name: Original filename/name
@@ -186,10 +192,10 @@ class Model:
         # Replace spaces and invalid filename characters with underscore
         # Invalid characters for Unix: / \0 and any control characters
         # Also replace common problematic characters: spaces, < > : " | ? * and symbols
-        # Keep only alphanumeric, underscores, hyphens, and dots (dots will be stripped later)
+        # Keep only alphanumeric, underscores, hyphens, and dots
         sanitized = re.sub(r'[^a-zA-Z0-9._-]', '_', name)
-        # Remove leading/trailing dots and spaces (converted to underscores)
-        sanitized = sanitized.strip('._')
+        # Remove only leading/trailing dots and hyphens (preserve in middle for shard numbers like "model-id-0")
+        sanitized = sanitized.strip('._-')
         # Ensure it's not empty
         if not sanitized:
             sanitized = "unnamed"
