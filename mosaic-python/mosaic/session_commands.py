@@ -847,7 +847,7 @@ def execute_training(
         session.status = SessionStatus.ERROR
         _session_manager.update_session(session_id, status=SessionStatus.ERROR)
     
-    # Show final status
+    # Show final status and training stats
     output_fn("\n" + "-" * 60 + "\n")
     output_fn("Training Status Summary:\n")
     output_fn("-" * 60 + "\n")
@@ -855,6 +855,50 @@ def execute_training(
         status = node_status.get("status", "unknown")
         message = node_status.get("message", "")
         output_fn(f"  {node_key}: {status} - {message}\n")
+    
+    # Display training statistics for all nodes
+    output_fn("\n" + "=" * 60 + "\n")
+    output_fn("Training Statistics:\n")
+    output_fn("=" * 60 + "\n")
+    
+    has_stats = False
+    for node_key, node_status in session.data_distribution_state["training_nodes"].items():
+        if node_status.get("status") == "complete":
+            stats = node_status.get("training_stats")
+            if stats:
+                has_stats = True
+                output_fn(f"\nNode: {node_key}\n")
+                output_fn(f"  Model Type: {stats.get('model_type', 'N/A')}\n")
+                output_fn(f"  Epochs: {stats.get('epochs', 'N/A')}\n")
+                if stats.get('final_loss') is not None:
+                    output_fn(f"  Final Loss: {stats.get('final_loss', 0.0):.4f}\n")
+                if stats.get('avg_loss_per_epoch') is not None:
+                    output_fn(f"  Average Loss: {stats.get('avg_loss_per_epoch', 0.0):.4f}\n")
+                if stats.get('training_time_seconds') is not None:
+                    time_sec = stats.get('training_time_seconds', 0.0)
+                    if time_sec < 60:
+                        output_fn(f"  Training Time: {time_sec:.2f} seconds\n")
+                    elif time_sec < 3600:
+                        output_fn(f"  Training Time: {time_sec / 60:.2f} minutes\n")
+                    else:
+                        output_fn(f"  Training Time: {time_sec / 3600:.2f} hours\n")
+    
+    if not has_stats:
+        output_fn("\nNo training statistics available.\n")
+    
+    # Store collated stats on session
+    if "training_stats" not in session.data_distribution_state:
+        session.data_distribution_state["training_stats"] = {}
+    
+    # Collate all stats by node
+    for node_key, node_status in session.data_distribution_state["training_nodes"].items():
+        if node_status.get("status") == "complete":
+            stats = node_status.get("training_stats")
+            if stats:
+                session.data_distribution_state["training_stats"][node_key] = stats
+    
+    # Update session to persist stats
+    _session_manager.update_session(session_id, data_distribution_state=session.data_distribution_state)
     
     # Ask if user wants to transfer models back
     if session.status == SessionStatus.COMPLETE:

@@ -2468,7 +2468,15 @@ class Beacon:
                         logger.info(f"Training for session {session_id} was cancelled before start")
                         return
                     
-                    trained_model = train_model_from_session(session, config=mosaic_module._config)
+                    training_result = train_model_from_session(session, config=mosaic_module._config)
+                    
+                    # Handle both old (just model) and new (model, stats) return formats
+                    if isinstance(training_result, tuple) and len(training_result) == 2:
+                        trained_model, training_stats = training_result
+                    else:
+                        # Legacy format - just model
+                        trained_model = training_result
+                        training_stats = {}
                     
                     # Check if training was cancelled
                     if cancel_event.is_set():
@@ -2479,7 +2487,7 @@ class Beacon:
                     session.status = SessionStatus.COMPLETE
                     mosaic_module._session_manager.update_session(session_id, status=SessionStatus.COMPLETE)
                     
-                    # Send status update: training complete
+                    # Send status update: training complete with stats
                     if caller_host and caller_port:
                         try:
                             # Get node key for status tracking
@@ -2494,6 +2502,7 @@ class Beacon:
                                     "message": "Training completed successfully",
                                     "model_id": trained_model.id,
                                     "node_key": node_key,
+                                    "training_stats": training_stats,  # Include training stats
                                 },
                                 timeout=30.0,
                             )
@@ -2613,6 +2622,7 @@ class Beacon:
                 "status": status,
                 "message": message,
                 "model_id": payload.get("model_id"),
+                "training_stats": payload.get("training_stats"),  # Store training stats
             }
             
             # Update overall session status based on all nodes

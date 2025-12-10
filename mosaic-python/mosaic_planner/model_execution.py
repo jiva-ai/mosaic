@@ -1,8 +1,9 @@
 """Model execution and training functions for Mosaic network."""
 
 import logging
+import time
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 import numpy as np
 import onnx
@@ -247,7 +248,7 @@ def _train_cnn_model(
     config: MosaicConfig,
     epochs: int = 1,
     hyperparameters: Optional[Dict[str, Any]] = None,
-) -> nn.Module:
+) -> Tuple[nn.Module, Dict[str, Any]]:
     """
     Train a CNN model (ResNet) on image data.
     
@@ -259,7 +260,8 @@ def _train_cnn_model(
         hyperparameters: Optional dict of hyperparameters. If None, uses DEFAULT_CNN_HYPERPARAMETERS
         
     Returns:
-        Trained PyTorch model
+        Tuple of (trained PyTorch model, training stats dict)
+        Stats dict contains: epochs, final_loss, avg_loss_per_epoch, training_time_seconds
     """
     if hyperparameters is None:
         hyperparameters = DEFAULT_CNN_HYPERPARAMETERS.copy()
@@ -314,6 +316,9 @@ def _train_cnn_model(
     
     model.train()
     training_epochs = hyperparameters.get("epochs", epochs)
+    start_time = time.time()
+    epoch_losses = []
+    
     for epoch in range(training_epochs):
         epoch_loss = 0.0
         num_batches = 0
@@ -364,9 +369,22 @@ def _train_cnn_model(
             scheduler.step()
         
         avg_loss = epoch_loss / num_batches if num_batches > 0 else 0.0
+        epoch_losses.append(avg_loss)
         logger.info(f"Epoch {epoch + 1}/{training_epochs}, Average Loss: {avg_loss:.4f}")
     
-    return model
+    training_time = time.time() - start_time
+    final_loss = epoch_losses[-1] if epoch_losses else 0.0
+    avg_loss_per_epoch = sum(epoch_losses) / len(epoch_losses) if epoch_losses else 0.0
+    
+    stats = {
+        "epochs": training_epochs,
+        "final_loss": final_loss,
+        "avg_loss_per_epoch": avg_loss_per_epoch,
+        "training_time_seconds": training_time,
+        "epoch_losses": epoch_losses,
+    }
+    
+    return model, stats
 
 
 def _train_wav2vec_model(
@@ -996,13 +1014,13 @@ def train_model_from_session(
     config: Optional[MosaicConfig] = None,
     epochs: int = 1,
     hyperparameters: Optional[Dict[str, Any]] = None,
-) -> Model:
+) -> Tuple[Model, Dict[str, Any]]:
     """
     Train a model from a Session instance.
     
     Loads the model (from binary_rep or onnx_location + file_name), trains it on
     the session's data using hints from Data and FileDefinition, saves the trained
-    model as ONNX, and returns a new Model instance.
+    model as ONNX, and returns a new Model instance along with training statistics.
     
     Args:
         session: Session instance containing model and data
@@ -1021,7 +1039,8 @@ def train_model_from_session(
                         See training_hyperparameters module for full defaults.
         
     Returns:
-        New Model instance with trained=True and updated onnx_location
+        Tuple of (new Model instance with trained=True and updated onnx_location, training stats dict)
+        Stats dict contains: epochs, final_loss, avg_loss_per_epoch, training_time_seconds, model_type
         
     Raises:
         ValueError: If model or data is missing, or model type is unsupported
@@ -1046,6 +1065,9 @@ def train_model_from_session(
     
     logger.info(f"Starting training for model {model.name} (type: {model.model_type})")
     
+    # Track training time
+    training_start_time = time.time()
+    
     # Load ONNX model
     onnx_model = _load_onnx_model(model, config)
     
@@ -1054,7 +1076,29 @@ def train_model_from_session(
     
     # Train the model
     training_func = TRAINING_FUNCTION_MAP[model.model_type]
-    trained_model = training_func(pytorch_model, session.data, config, epochs=epochs, hyperparameters=hyperparameters)
+    training_result = training_func(pytorch_model, session.data, config, epochs=epochs, hyperparameters=hyperparameters)
+    
+    # Handle both old (just model) and new (model, stats) return formats
+    if isinstance(training_result, tuple) and len(training_result) == 2:
+        trained_model, training_stats = training_result
+    else:
+        # Legacy format - just model, create basic stats
+        trained_model = training_result
+        training_time = time.time() - training_start_time
+        training_stats = {
+            "epochs": epochs,
+            "final_loss": 0.0,  # Unknown if training function doesn't return it
+            "avg_loss_per_epoch": 0.0,
+            "training_time_seconds": training_time,
+            "epoch_losses": [],
+        }
+    
+    # Update training time if not already set
+    if "training_time_seconds" not in training_stats or training_stats["training_time_seconds"] == 0:
+        training_stats["training_time_seconds"] = time.time() - training_start_time
+    
+    # Add model type to stats
+    training_stats["model_type"] = model.model_type.value if hasattr(model.model_type, "value") else str(model.model_type)
     
     # Export trained model to ONNX
     trained_model.eval()
@@ -1091,7 +1135,7 @@ def train_model_from_session(
         trained=True,
     )
     
-    return new_model
+    return new_model, training_stats
 
 
 def _create_dummy_input(model: Model, data: Data) -> Any:

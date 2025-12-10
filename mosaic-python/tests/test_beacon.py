@@ -3586,8 +3586,9 @@ class TestHandleStartTraining:
         # Mock train_model_from_session
         with patch("mosaic.mosaic._session_manager", mock_session_manager):
             with patch("mosaic.mosaic._config", config):
-                with patch("mosaic_planner.model_execution.train_model_from_session") as mock_train:
-                    mock_train.return_value = mock_trained_model
+                    with patch("mosaic_planner.model_execution.train_model_from_session") as mock_train:
+                        # train_model_from_session now returns (model, stats) tuple
+                        mock_train.return_value = (mock_trained_model, {"epochs": 1, "final_loss": 0.5, "training_time_seconds": 10.0})
                     
                     # Mock send_command to capture status updates
                     status_updates = []
@@ -3625,6 +3626,9 @@ class TestHandleStartTraining:
                         assert complete_update.get("session_id") == "test_session_id"
                         assert complete_update.get("model_id") == "trained_model_123"
                         assert complete_update.get("node_key") == "192.168.1.2:7002"
+                        # Verify training_stats are included
+                        assert "training_stats" in complete_update
+                        assert complete_update["training_stats"]["epochs"] == 1
                         
                         # Check return value (training now runs in thread, so immediate return is just "started")
                         assert result is not None

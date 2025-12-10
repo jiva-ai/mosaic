@@ -732,7 +732,8 @@ class TestExecuteTraining:
             with patch("mosaic_planner.model_execution.train_model_from_session") as mock_train:
                 mock_trained_model = MagicMock()
                 mock_trained_model.id = "trained_model_123"
-                mock_train.return_value = mock_trained_model
+                # train_model_from_session now returns (model, stats) tuple
+                mock_train.return_value = (mock_trained_model, {"epochs": 1, "final_loss": 0.5, "training_time_seconds": 10.0})
                 
                 result = execute_training(session.id, output_fn)
             
@@ -744,6 +745,88 @@ class TestExecuteTraining:
             mock_session_manager.update_session.assert_any_call(session.id, status=SessionStatus.COMPLETE)
             
             assert any("local only" in line.lower() for line in output_lines)
+            
+            # Verify stats are stored on session
+            assert "training_stats" in session.data_distribution_state
+        finally:
+            initialize(None, None, [], MosaicConfig(), None)
+    
+    def test_execute_training_collects_and_displays_stats(self, temp_state_dir):
+        """Test that execute_training collects and displays training statistics."""
+        output_lines = []
+        
+        def output_fn(text: str) -> None:
+            output_lines.append(text)
+        
+        config = create_test_config_with_state(state_dir=temp_state_dir)
+        config.host = "192.168.1.0"
+        config.comms_port = 7000
+        
+        mock_beacon = MagicMock()
+        mock_session_manager = MagicMock()
+        
+        model = Model(name="test_model", model_type=ModelType.CNN)
+        plan = Plan(
+            stats_data=[],
+            distribution_plan=[
+                {"host": "192.168.1.1", "comms_port": 7001},
+            ],
+            model=model,
+        )
+        session = Session(plan=plan, status=SessionStatus.RUNNING)
+        session.data_distribution_state = {}
+        
+        mock_session_manager.get_session_by_id.return_value = session
+        mock_beacon.send_command.return_value = {"status": "success"}
+        
+        # Mock input function to simulate user entering 'no' for model transfer
+        def input_fn(prompt: str) -> str:
+            return "no"
+        
+        initialize(mock_beacon, mock_session_manager, [], config, input_fn)
+        try:
+            # Simulate training completion with stats
+            training_stats = {
+                "epochs": 5,
+                "final_loss": 0.1234,
+                "avg_loss_per_epoch": 0.25,
+                "training_time_seconds": 120.5,
+                "model_type": "cnn",
+            }
+            
+            # Pre-set the complete status with stats before the loop starts checking
+            session.data_distribution_state["training_nodes"] = {
+                "192.168.1.1:7001": {
+                    "status": "complete",
+                    "message": "Training completed successfully",
+                    "model_id": "trained_model_123",
+                    "training_stats": training_stats,
+                }
+            }
+            
+            with patch("mosaic.session_commands.time.sleep"):
+                time_values = [0, 0.1]  # Start time, then first check
+                with patch("mosaic.session_commands.time.time", side_effect=time_values):
+                    result = execute_training(session.id, output_fn, timeout=1.0, check_interval=0.1)
+            
+            # Verify stats are stored on session
+            assert "training_stats" in session.data_distribution_state
+            assert "192.168.1.1:7001" in session.data_distribution_state["training_stats"]
+            stored_stats = session.data_distribution_state["training_stats"]["192.168.1.1:7001"]
+            assert stored_stats["epochs"] == 5
+            assert stored_stats["final_loss"] == 0.1234
+            
+            # Verify stats are displayed in output
+            output_text = "".join(output_lines)
+            assert "Training Statistics" in output_text
+            assert "192.168.1.1:7001" in output_text
+            assert "Epochs: 5" in output_text
+            assert "Final Loss: 0.1234" in output_text or "0.1234" in output_text
+            
+            # Verify session was updated with stats
+            update_calls = [call for call in mock_session_manager.update_session.call_args_list 
+                          if len(call[1]) > 0 and "data_distribution_state" in call[1]]
+            assert len(update_calls) > 0, "Session should be updated with training stats"
         finally:
             initialize(None, None, [], MosaicConfig(), None)
 
