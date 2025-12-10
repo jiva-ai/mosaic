@@ -44,6 +44,8 @@ line-length = 100
 target-version = "py311"
 
 [tool.pytest.ini_options]
+# Add project root to Python path for uv run pytest compatibility
+pythonpath = ["."]
 filterwarnings = [
     # Suppress torch_geometric deprecation warning (third-party library)
     "ignore::DeprecationWarning:torch_geometric",

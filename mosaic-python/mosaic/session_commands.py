@@ -467,30 +467,47 @@ def _create_session_simple(output_fn: Callable[[str], None]) -> Optional[Session
             status=SessionStatus.IDLE,
         )
         
+        # Add session to manager before distribution so state can be persisted
+        _session_manager.add_session(session)
+        
         # Set status to RUNNING
         session.status = SessionStatus.RUNNING
+        _session_manager.update_session(session.id, status=SessionStatus.RUNNING)
         
-        # Execute plans with progress indication
+        # Execute plans with progress indication and state tracking
         output_fn("\nExecuting data distribution plan...\n")
         try:
             if plan.data_segmentation_plan:
                 total_machines = len(plan.data_segmentation_plan)
                 output_fn(f"Distributing data to {total_machines} machine(s)...\n")
                 
-                # Execute the plan
-                _beacon.execute_data_plan(plan, data)
+                # Execute the plan (now accepts session for state tracking)
+                _beacon.execute_data_plan(plan, data, session)
+                
+                # Check final status
+                if session.status == SessionStatus.ERROR_CORRECTION:
+                    output_fn("⚠ Some distributions required retries. Checking final status...\n")
                 
                 # Show completion with progress bar
                 progress_bar = "=" * 20
-                output_fn(f"Progress: [{progress_bar}] 100% - {total_machines}/{total_machines} machines\n")
-                output_fn("✓ Data distribution completed successfully.\n")
+                successful = sum(
+                    1 for m in session.data_distribution_state.get("machines", {}).values()
+                    if m.get("status") == "success"
+                )
+                output_fn(f"Progress: [{progress_bar}] 100% - {successful}/{total_machines} machines succeeded\n")
+                
+                if session.status == SessionStatus.ERROR:
+                    error_msg = session.data_distribution_state.get("final_error", "Unknown error")
+                    output_fn(f"✗ Data distribution failed: {error_msg}\n")
+                else:
+                    output_fn("✓ Data distribution completed successfully.\n")
             else:
                 output_fn("Warning: No data segmentation plan to execute.\n")
         except Exception as e:
             output_fn(f"✗ Error executing data plan: {e}\n")
             logger.error(f"Error executing data plan: {e}", exc_info=True)
             session.status = SessionStatus.ERROR
-            _session_manager.add_session(session)
+            _session_manager.update_session(session.id, status=SessionStatus.ERROR)
             return session
         
         output_fn("\nExecuting model distribution plan...\n")
@@ -501,21 +518,34 @@ def _create_session_simple(output_fn: Callable[[str], None]) -> Optional[Session
                 
                 _beacon.execute_model_plan(session, selected_model)
                 
+                # Check final status
+                if session.status == SessionStatus.ERROR_CORRECTION:
+                    output_fn("⚠ Some distributions required retries. Checking final status...\n")
+                
                 # Show completion with progress bar
                 progress_bar = "=" * 20
-                output_fn(f"Progress: [{progress_bar}] 100% - {total_nodes}/{total_nodes} nodes\n")
-                output_fn("✓ Model distribution completed successfully.\n")
+                successful = sum(
+                    1 for n in session.model_distribution_state.get("nodes", {}).values()
+                    if n.get("status") == "success"
+                )
+                output_fn(f"Progress: [{progress_bar}] 100% - {successful}/{total_nodes} nodes succeeded\n")
+                
+                if session.status == SessionStatus.ERROR:
+                    error_msg = session.model_distribution_state.get("final_error", "Unknown error")
+                    output_fn(f"✗ Model distribution failed: {error_msg}\n")
+                else:
+                    output_fn("✓ Model distribution completed successfully.\n")
             else:
                 output_fn("Warning: No distribution plan to execute.\n")
         except Exception as e:
             output_fn(f"✗ Error executing model plan: {e}\n")
             logger.error(f"Error executing model plan: {e}", exc_info=True)
             session.status = SessionStatus.ERROR
-            _session_manager.add_session(session)
+            _session_manager.update_session(session.id, status=SessionStatus.ERROR)
             return session
         
-        # Add session to manager
-        _session_manager.add_session(session)
+        # Final persistence (session already added, just update status)
+        _session_manager.update_session(session.id, status=session.status)
         
         output_fn("\n" + "=" * 60 + "\n")
         output_fn(f"Session created successfully!\n")

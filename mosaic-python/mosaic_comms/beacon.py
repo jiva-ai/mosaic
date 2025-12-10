@@ -1278,6 +1278,7 @@ class Beacon:
                 self._handle_execute_data_plan(serialized_data)
             except Exception as e:
                 logger.error(f"Error executing data plan locally: {e}")
+                raise  # Re-raise to trigger retry logic
         else:
             # Send to remote node with chunking if needed
             try:
@@ -1297,7 +1298,7 @@ class Beacon:
                         timeout=300.0,  # Longer timeout for data transfer
                     )
                     if result is None:
-                        logger.warning(f"No response from {host}:{comms_port} for data plan")
+                        raise Exception(f"No response from {host}:{comms_port} for data plan")
                 else:
                     # Need to chunk
                     chunks = chunk_data(serialized_data, chunk_size_mb)
@@ -1307,6 +1308,7 @@ class Beacon:
                     logger.info(f"Sending data plan to {host}:{comms_port} in {total_chunks} chunks (chunk_id: {chunk_id})")
                     
                     # Send each chunk
+                    all_chunks_sent = True
                     for chunk_index, chunk in enumerate(chunks):
                         # Create chunk payload with metadata in header
                         # We'll use a custom header format for chunks
@@ -1333,7 +1335,11 @@ class Beacon:
                         
                         if result is None:
                             logger.warning(f"No response for chunk {chunk_index + 1}/{total_chunks} from {host}:{comms_port}")
+                            all_chunks_sent = False
                             break
+                    
+                    if not all_chunks_sent:
+                        raise Exception(f"Failed to send all chunks to {host}:{comms_port}")
                     
                     # Send final command to trigger processing
                     logger.info(f"Sending final command to process chunks (chunk_id: {chunk_id})")
@@ -1344,10 +1350,61 @@ class Beacon:
                         payload={"chunk_id": chunk_id},
                         timeout=300.0,
                     )
+                    if result is None:
+                        raise Exception(f"No response from {host}:{comms_port} for finalize command")
             except Exception as e:
                 logger.error(f"Error sending data plan to {host}:{comms_port}: {e}")
+                raise  # Re-raise to trigger retry logic
 
-    def execute_data_plan(self, plan: Plan, data: Data) -> None:
+    def _find_next_capable_node(
+        self,
+        failed_node: Dict[str, Any],
+        distribution_plan: List[Dict[str, Any]],
+        failed_nodes: List[Dict[str, Any]],
+        exclude_nodes: Optional[List[Dict[str, Any]]] = None,
+    ) -> Optional[Dict[str, Any]]:
+        """
+        Find the next most capable node from distribution plan, excluding failed nodes.
+        
+        Args:
+            failed_node: The node that failed
+            distribution_plan: Full distribution plan sorted by capability
+            failed_nodes: List of nodes that have already failed
+            exclude_nodes: Optional list of nodes to exclude (e.g., already assigned nodes)
+        
+        Returns:
+            Next most capable node, or None if no capable nodes remain
+        """
+        # Create set of failed node identifiers for quick lookup
+        failed_identifiers = {
+            (n.get("host"), n.get("comms_port"))
+            for n in failed_nodes
+        }
+        failed_identifiers.add((failed_node.get("host"), failed_node.get("comms_port")))
+        
+        # Add exclude_nodes to failed_identifiers if provided
+        if exclude_nodes:
+            for n in exclude_nodes:
+                failed_identifiers.add((n.get("host"), n.get("comms_port")))
+        
+        # Sort distribution plan by capability (capacity_fraction or effective_score)
+        sorted_plan = sorted(
+            distribution_plan,
+            key=lambda n: n.get("capacity_fraction", 0.0) or n.get("effective_score", 0.0),
+            reverse=True
+        )
+        
+        # Find next capable node that hasn't failed and isn't excluded
+        for node in sorted_plan:
+            node_id = (node.get("host"), node.get("comms_port"))
+            if node_id not in failed_identifiers:
+                # Check if node is eligible (online, etc.)
+                if node.get("connection_status") == "online" or node.get("connection_status") is None:
+                    return node
+        
+        return None
+
+    def execute_data_plan(self, plan: Plan, data: Data, session: Optional[Session] = None) -> None:
         """
         Execute a data distribution plan by sending data segments to nodes.
         
@@ -1355,16 +1412,29 @@ class Beacon:
         and distributes it to the appropriate nodes via host/comms_port.
         If a node is the current host, calls the handler directly.
         
+        Tracks distribution state in Session and retries failed distributions
+        with the next most capable node.
+        
         Uses multithreading when network capacity is sufficient to optimize
         data transfer to multiple machines.
         
         Args:
             plan: Plan object with data_segmentation_plan
             data: Data object with file definitions
+            session: Optional Session object to track distribution state
         """
         if not plan.data_segmentation_plan:
             logger.warning("Plan has no data_segmentation_plan")
             return
+        
+        # Initialize distribution state in session
+        if session is not None:
+            if "machines" not in session.data_distribution_state:
+                session.data_distribution_state = {
+                    "machines": {},
+                    "failed_machines": [],
+                    "retry_attempts": {},
+                }
         
         # Create a mapping of file location to FileDefinition for quick lookup
         file_def_map = {fd.location: fd for fd in data.file_definitions}
@@ -1383,30 +1453,87 @@ class Beacon:
         except Exception as e:
             logger.warning(f"Error loading benchmark data for thread count calculation: {e}")
         
-        # Process each machine's segments
-        if thread_count > 1 and len(plan.data_segmentation_plan) > 1:
-            # Use multithreading for multiple machines
-            with ThreadPoolExecutor(max_workers=thread_count) as executor:
-                futures = []
-                for machine_plan in plan.data_segmentation_plan:
-                    future = executor.submit(
-                        self._send_data_to_machine,
-                        machine_plan,
-                        plan,
-                        file_def_map,
-                    )
-                    futures.append(future)
+        # Process each machine's segments with retry logic
+        machines_to_process = list(plan.data_segmentation_plan)
+        failed_machines = []
+        
+        while machines_to_process:
+            machine_plan = machines_to_process.pop(0)
+            host = machine_plan.get("host")
+            comms_port = machine_plan.get("comms_port")
+            machine_key = f"{host}:{comms_port}"
+            
+            try:
+                # Track attempt
+                if session is not None:
+                    if machine_key not in session.data_distribution_state["retry_attempts"]:
+                        session.data_distribution_state["retry_attempts"][machine_key] = 0
+                    session.data_distribution_state["retry_attempts"][machine_key] += 1
                 
-                # Wait for all sends to complete
-                for future in as_completed(futures):
-                    try:
-                        future.result()  # This will raise any exceptions that occurred
-                    except Exception as e:
-                        logger.error(f"Error in threaded data send: {e}")
-        else:
-            # Single-threaded execution
-            for machine_plan in plan.data_segmentation_plan:
+                # Send data to machine
                 self._send_data_to_machine(machine_plan, plan, file_def_map)
+                
+                # Mark as successful
+                if session is not None:
+                    session.data_distribution_state["machines"][machine_key] = {
+                        "status": "success",
+                        "host": host,
+                        "comms_port": comms_port,
+                        "attempts": session.data_distribution_state["retry_attempts"][machine_key],
+                    }
+                    logger.info(f"Successfully distributed data to {host}:{comms_port}")
+                
+            except Exception as e:
+                logger.error(f"Error sending data to {host}:{comms_port}: {e}")
+                
+                # Mark as failed
+                if session is not None:
+                    session.data_distribution_state["machines"][machine_key] = {
+                        "status": "failed",
+                        "host": host,
+                        "comms_port": comms_port,
+                        "error": str(e),
+                        "attempts": session.data_distribution_state["retry_attempts"][machine_key],
+                    }
+                    failed_machines.append(machine_plan)
+                
+                # Try to find next capable node
+                if session is not None and plan.distribution_plan:
+                    session.status = SessionStatus.ERROR_CORRECTION
+                    next_node = self._find_next_capable_node(
+                        machine_plan,
+                        plan.distribution_plan,
+                        failed_machines,
+                    )
+                    
+                    if next_node:
+                        logger.info(f"Retrying data distribution to {next_node.get('host')}:{next_node.get('comms_port')} (next most capable node)")
+                        # Create new machine plan with same segments but different host/port
+                        retry_machine_plan = machine_plan.copy()
+                        retry_machine_plan["host"] = next_node.get("host")
+                        retry_machine_plan["comms_port"] = next_node.get("comms_port")
+                        retry_machine_plan["original_host"] = host
+                        retry_machine_plan["original_comms_port"] = comms_port
+                        machines_to_process.append(retry_machine_plan)
+                    else:
+                        logger.error(f"No capable nodes remaining for data distribution. Failed to distribute to {host}:{comms_port}")
+                        if session is not None:
+                            session.status = SessionStatus.ERROR
+                            session.data_distribution_state["final_error"] = f"No capable nodes remaining. Failed to distribute data to {host}:{comms_port}"
+        
+        # Final status check
+        if session is not None:
+            if failed_machines and session.status != SessionStatus.ERROR:
+                # If we had failures but recovered, check if all succeeded
+                all_succeeded = all(
+                    m.get("status") == "success"
+                    for m in session.data_distribution_state["machines"].values()
+                )
+                if all_succeeded:
+                    session.status = SessionStatus.RUNNING
+                else:
+                    session.status = SessionStatus.ERROR
+                    session.data_distribution_state["final_error"] = "Some data distributions failed and could not be recovered"
 
     def execute_model_plan(self, session: Session, model: Model) -> None:
         """
@@ -1415,6 +1542,9 @@ class Beacon:
         Reads the distribution_plan from the Session's Plan, and distributes
         the model to all host/comms_port machines listed in the plan.
         If a node is the current host, calls the handler directly.
+        
+        Tracks distribution state in Session and retries failed distributions
+        with the next most capable node.
         
         Args:
             session: Session instance with a Plan (plan must not be None)
@@ -1427,6 +1557,14 @@ class Beacon:
         if not plan.distribution_plan:
             logger.warning("Plan has no distribution_plan")
             return
+        
+        # Initialize distribution state in session
+        if "nodes" not in session.model_distribution_state:
+            session.model_distribution_state = {
+                "nodes": {},
+                "failed_nodes": [],
+                "retry_attempts": {},
+            }
         
         # Ensure model has binary_rep set
         if model.binary_rep is None:
@@ -1473,10 +1611,15 @@ class Beacon:
             except Exception as e:
                 raise ValueError(f"Error reading model file {model_file}: {e}")
         
-        # Send to each machine in distribution_plan with shard numbers
-        for shard_number, machine_info in enumerate(plan.distribution_plan):
+        # Send to each machine in distribution_plan with shard numbers and retry logic
+        nodes_to_process = list(enumerate(plan.distribution_plan))
+        failed_nodes = []
+        
+        while nodes_to_process:
+            shard_number, machine_info = nodes_to_process.pop(0)
             host = machine_info.get("host")
             comms_port = machine_info.get("comms_port")
+            node_key = f"{host}:{comms_port}:{shard_number}"
             
             if not host or not comms_port:
                 logger.warning(f"Invalid distribution plan entry: missing host or comms_port")
@@ -1505,23 +1648,41 @@ class Beacon:
                 serialized_sharded_model = gzip.compress(pickled_model)
             except Exception as e:
                 logger.error(f"Error serializing sharded model: {e}")
+                session.model_distribution_state["nodes"][node_key] = {
+                    "status": "failed",
+                    "host": host,
+                    "comms_port": comms_port,
+                    "shard_number": shard_number,
+                    "error": f"Serialization error: {e}",
+                }
                 continue
             
-            # Send to node (or call handler directly if self)
-            if self._is_self_host(host, comms_port):
-                # Call handler directly
-                try:
+            # Track attempt
+            if node_key not in session.model_distribution_state["retry_attempts"]:
+                session.model_distribution_state["retry_attempts"][node_key] = 0
+            session.model_distribution_state["retry_attempts"][node_key] += 1
+            
+            try:
+                # Send to node (or call handler directly if self)
+                if self._is_self_host(host, comms_port):
+                    # Call handler directly
                     logger.info(f"Executing model plan locally for {host}:{comms_port} (shard {shard_number})")
                     self._handle_execute_model_plan(serialized_sharded_model)
-                except Exception as e:
-                    logger.error(f"Error executing model plan locally: {e}")
-            else:
-                # Send to remote node
-                try:
+                    # Mark as successful
+                    session.model_distribution_state["nodes"][node_key] = {
+                        "status": "success",
+                        "host": host,
+                        "comms_port": comms_port,
+                        "shard_number": shard_number,
+                        "attempts": session.model_distribution_state["retry_attempts"][node_key],
+                    }
+                else:
+                    # Send to remote node
                     data_size_bytes = len(serialized_sharded_model)
                     chunk_size_mb = self.config.data_chunk_size
                     chunk_size_bytes = chunk_size_mb * 1024 * 1024
                     
+                    success = False
                     if data_size_bytes <= chunk_size_bytes:
                         # Small enough to send in one chunk
                         logger.info(f"Sending model shard {shard_number} to {host}:{comms_port} (single chunk, {data_size_bytes / 1024 / 1024:.2f} MB)")
@@ -1532,8 +1693,7 @@ class Beacon:
                             payload=serialized_sharded_model,
                             timeout=300.0,  # Longer timeout for model transfer
                         )
-                        if result is None:
-                            logger.warning(f"No response from {host}:{comms_port} for model plan")
+                        success = result is not None
                     else:
                         # Need to chunk (similar to data plan)
                         chunks = chunk_data(serialized_sharded_model, chunk_size_mb)
@@ -1543,6 +1703,7 @@ class Beacon:
                         logger.info(f"Sending model shard {shard_number} to {host}:{comms_port} in {total_chunks} chunks (chunk_id: {chunk_id})")
                         
                         # Send each chunk
+                        all_chunks_sent = True
                         for chunk_index, chunk in enumerate(chunks):
                             chunk_header = {
                                 "chunk_id": chunk_id,
@@ -1564,19 +1725,83 @@ class Beacon:
                             
                             if result is None:
                                 logger.warning(f"No response for chunk {chunk_index + 1}/{total_chunks} from {host}:{comms_port}")
+                                all_chunks_sent = False
                                 break
                         
-                        # Send final command to trigger processing
-                        logger.info(f"Sending final command to process model chunks (chunk_id: {chunk_id})")
-                        result = self.send_command(
-                            host=host,
-                            port=comms_port,
-                            command="exmplan_finalize",
-                            payload={"chunk_id": chunk_id},
-                            timeout=300.0,
-                        )
-                except Exception as e:
-                    logger.error(f"Error sending model to {host}:{comms_port}: {e}")
+                        if all_chunks_sent:
+                            # Send final command to trigger processing
+                            logger.info(f"Sending final command to process model chunks (chunk_id: {chunk_id})")
+                            result = self.send_command(
+                                host=host,
+                                port=comms_port,
+                                command="exmplan_finalize",
+                                payload={"chunk_id": chunk_id},
+                                timeout=300.0,
+                            )
+                            success = result is not None
+                    
+                    if success:
+                        # Mark as successful
+                        session.model_distribution_state["nodes"][node_key] = {
+                            "status": "success",
+                            "host": host,
+                            "comms_port": comms_port,
+                            "shard_number": shard_number,
+                            "attempts": session.model_distribution_state["retry_attempts"][node_key],
+                        }
+                        logger.info(f"Successfully distributed model shard {shard_number} to {host}:{comms_port}")
+                    else:
+                        raise Exception(f"No response from {host}:{comms_port} for model shard {shard_number}")
+                        
+            except Exception as e:
+                logger.error(f"Error sending model shard {shard_number} to {host}:{comms_port}: {e}")
+                
+                # Mark as failed
+                session.model_distribution_state["nodes"][node_key] = {
+                    "status": "failed",
+                    "host": host,
+                    "comms_port": comms_port,
+                    "shard_number": shard_number,
+                    "error": str(e),
+                    "attempts": session.model_distribution_state["retry_attempts"][node_key],
+                }
+                failed_nodes.append(machine_info)
+                
+                # Try to find next capable node
+                session.status = SessionStatus.ERROR_CORRECTION
+                next_node = self._find_next_capable_node(
+                    machine_info,
+                    plan.distribution_plan,
+                    failed_nodes,
+                )
+                
+                if next_node:
+                    logger.info(f"Retrying model shard {shard_number} distribution to {next_node.get('host')}:{next_node.get('comms_port')} (next most capable node)")
+                    # Create new machine info with same shard but different host/port
+                    retry_machine_info = machine_info.copy()
+                    retry_machine_info["host"] = next_node.get("host")
+                    retry_machine_info["comms_port"] = next_node.get("comms_port")
+                    retry_machine_info["original_host"] = host
+                    retry_machine_info["original_comms_port"] = comms_port
+                    nodes_to_process.append((shard_number, retry_machine_info))
+                else:
+                    logger.error(f"No capable nodes remaining for model shard {shard_number} distribution. Failed to distribute to {host}:{comms_port}")
+                    session.status = SessionStatus.ERROR
+                    session.model_distribution_state["final_error"] = f"No capable nodes remaining. Failed to distribute model shard {shard_number} to {host}:{comms_port}"
+        
+        # Final status check
+        if failed_nodes and session.status != SessionStatus.ERROR:
+            # If we had failures but recovered, check if all succeeded
+            all_succeeded = all(
+                n.get("status") == "success"
+                for n in session.model_distribution_state["nodes"].values()
+            )
+            if all_succeeded:
+                session.status = SessionStatus.RUNNING
+            else:
+                session.status = SessionStatus.ERROR
+                if "final_error" not in session.model_distribution_state:
+                    session.model_distribution_state["final_error"] = "Some model distributions failed and could not be recovered"
 
     def _handle_execute_model_plan(self, payload: Union[Dict[str, Any], bytes]) -> Optional[Dict[str, Any]]:
         """

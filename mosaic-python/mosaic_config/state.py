@@ -42,6 +42,7 @@ class SessionStatus(Enum):
     """Session status enumeration."""
 
     IDLE = "idle"
+    RUNNING = "running"
     TRAINING = "training"
     INFERRING = "inferring"
     ERROR_CORRECTION = "error_correction"
@@ -322,6 +323,9 @@ class Session:
     id: str = field(default_factory=lambda: str(uuid.uuid4()))  # Unique identifier
     _model: Optional["Model"] = field(default=None, init=False, repr=False)  # Lazy-loaded model
     _model_loader: Optional[Any] = field(default=None, init=False, repr=False)  # Function to load model by ID
+    # Distribution state tracking
+    data_distribution_state: Dict[str, Any] = field(default_factory=dict)  # Track data distribution success/failure per node
+    model_distribution_state: Dict[str, Any] = field(default_factory=dict)  # Track model distribution success/failure per node
 
     def __init__(
         self,
@@ -333,6 +337,8 @@ class Session:
         time_ended: int = -1,
         status: SessionStatus = SessionStatus.IDLE,
         id: Optional[str] = None,
+        data_distribution_state: Optional[Dict[str, Any]] = None,
+        model_distribution_state: Optional[Dict[str, Any]] = None,
     ):
         """
         Initialize Session instance.
@@ -346,6 +352,8 @@ class Session:
             time_ended: End time in millis since epoch. Defaults to -1 (not finished).
             status: Session status. Defaults to SessionStatus.IDLE.
             id: Optional unique identifier. If not provided, generates a new UUID.
+            data_distribution_state: Optional initial data distribution state
+            model_distribution_state: Optional initial model distribution state
         """
         self.plan = plan
         self.data = data
@@ -355,6 +363,8 @@ class Session:
         self.id = id if id is not None else str(uuid.uuid4())
         self._model = None
         self._model_loader = None
+        self.data_distribution_state = data_distribution_state if data_distribution_state is not None else {}
+        self.model_distribution_state = model_distribution_state if model_distribution_state is not None else {}
         
         if model is not None:
             self._model = model
@@ -410,6 +420,8 @@ class Session:
             'time_ended': self.time_ended,
             'status': self.status.value if isinstance(self.status, SessionStatus) else self.status,
             'id': self.id,
+            'data_distribution_state': self.data_distribution_state,
+            'model_distribution_state': self.model_distribution_state,
         }
         return state
     
@@ -427,6 +439,8 @@ class Session:
         else:
             self.status = status_val
         self.id = state['id']
+        self.data_distribution_state = state.get('data_distribution_state', {})
+        self.model_distribution_state = state.get('model_distribution_state', {})
         self._model = None
         self._model_loader = None
 

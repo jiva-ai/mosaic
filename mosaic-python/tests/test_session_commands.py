@@ -6,11 +6,69 @@ from typing import List
 
 import pytest
 
-# Patch the problematic import before importing session_commands
+# Patch onnx at import time to avoid import errors
+# We need to do this before importing session_commands
 import sys
-_mock_onnx = MagicMock()
-sys.modules['onnx'] = _mock_onnx
 
+# Store original onnx if it exists
+_original_onnx = sys.modules.get('onnx')
+_we_added_onnx_mock = False
+
+# Only mock if onnx isn't already imported (to avoid breaking other tests)
+if 'onnx' not in sys.modules:
+    # Create a proper mock module that won't break when accessed
+    from types import ModuleType, SimpleNamespace
+    
+    class MockOnnx(ModuleType):
+        """Mock onnx module with necessary attributes."""
+        def __init__(self):
+            super().__init__('onnx')
+            # Set __spec__ properly - this is critical
+            spec = SimpleNamespace()
+            spec.name = 'onnx'
+            spec.loader = None
+            spec.origin = None
+            self.__spec__ = spec
+            
+            # Add submodules and attributes that might be accessed
+            # Create reference as a module-like object
+            reference = SimpleNamespace()
+            self.reference = reference
+            
+            # Create ModelProto and TensorProto as classes
+            self.ModelProto = type('ModelProto', (), {})
+            self.TensorProto = type('TensorProto', (), {
+                'FLOAT': 1,
+                'INT64': 7,
+            })
+            
+            # Create checker with check_model method
+            checker = SimpleNamespace()
+            checker.check_model = MagicMock()
+            self.checker = checker
+            
+            # Create load function
+            self.load = MagicMock()
+            
+            # Create helper module
+            helper = SimpleNamespace()
+            helper.make_tensor_value_info = MagicMock()
+            helper.make_node = MagicMock()
+            helper.make_graph = MagicMock()
+            helper.make_model = MagicMock()
+            self.helper = helper
+        
+        def __getattr__(self, name):
+            # Return MagicMock for any other attribute access
+            return MagicMock()
+    
+    mock_onnx = MockOnnx()
+    sys.modules['onnx'] = mock_onnx
+    # Also add onnx.reference to sys.modules for submodule imports
+    sys.modules['onnx.reference'] = mock_onnx.reference
+    _we_added_onnx_mock = True
+
+# Import session_commands (this will trigger imports that use onnx)
 from mosaic.session_commands import (
     _discover_datasets,
     _format_plan_summary,
@@ -19,6 +77,12 @@ from mosaic.session_commands import (
     execute_delete_session,
     initialize,
 )
+
+# Note: We don't restore/remove the mock here because:
+# 1. If onnx was already imported, we didn't mock it, so nothing to restore
+# 2. If we added the mock, Python has already cached imports that used it
+# 3. Removing it now would break those cached imports
+# Instead, we'll use a pytest fixture to clean up after all tests in this file
 from mosaic_config.config import MosaicConfig
 from mosaic_config.state import (
     Data,
@@ -31,6 +95,16 @@ from mosaic_config.state import (
     SessionStatus,
 )
 from tests.conftest import create_test_config_with_state
+
+
+@pytest.fixture(scope="module", autouse=True)
+def cleanup_onnx_mock():
+    """Clean up onnx mock after all tests in this module."""
+    yield
+    # After all tests, restore original if we had one
+    import sys
+    if _we_added_onnx_mock and _original_onnx is not None:
+        sys.modules['onnx'] = _original_onnx
 
 
 class TestDiscoverDatasets:
@@ -471,6 +545,262 @@ class TestExecuteCreateSession:
                 
                 # This will likely cancel early, but we can verify mocks are set up
                 execute_create_session(output_fn)
+                
+        finally:
+            initialize(None, None, [], MosaicConfig(), None)
+
+    def test_create_session_simple_tracks_distribution_state(self, tmp_path, temp_state_dir):
+        """Test that _create_session_simple properly tracks distribution state in session."""
+        output_lines = []
+        input_responses = [
+            "1",  # Select first model
+            "1",  # Select first dataset (or manual entry)
+            "text",  # Data type for manual entry
+            "yes",  # Confirm execution
+        ]
+        
+        def output_fn(text: str) -> None:
+            output_lines.append(text)
+        
+        def input_fn(prompt: str) -> str:
+            if input_responses:
+                return input_responses.pop(0)
+            return "cancel"
+        
+        # Create test data directory
+        data_dir = tmp_path / "data"
+        data_dir.mkdir(exist_ok=True)
+        test_file = data_dir / "test.txt"
+        test_file.write_text("test data")
+        
+        config = create_test_config_with_state(state_dir=temp_state_dir, data_location=str(data_dir))
+        mock_beacon = MagicMock()
+        mock_beacon.collect_stats.return_value = [
+            {"host": "127.0.0.1", "comms_port": 5001, "connection_status": "online", "cpu_percent": 50.0}
+        ]
+        
+        mock_session_manager = MagicMock()
+        created_session = None
+        
+        def add_session(session):
+            nonlocal created_session
+            created_session = session
+            return session.id
+        
+        mock_session_manager.add_session.side_effect = add_session
+        mock_session_manager.update_session.return_value = True
+        
+        model = Model(name="test_model", model_type=ModelType.CNN)
+        
+        initialize(mock_beacon, mock_session_manager, [model], config, input_fn)
+        try:
+            with patch("mosaic.session_commands.plan_static_weighted_shards") as mock_plan_shards, \
+                 patch("mosaic.session_commands.plan_data_distribution") as mock_plan_data, \
+                 patch("mosaic.session_commands.plan_model") as mock_plan_model, \
+                 patch("mosaic.session_commands._beacon.execute_data_plan") as mock_exec_data, \
+                 patch("mosaic.session_commands._beacon.execute_model_plan") as mock_exec_model:
+                
+                # Setup mocks
+                mock_plan_shards.return_value = [
+                    {"host": "127.0.0.1", "comms_port": 5001, "capacity_fraction": 1.0}
+                ]
+                
+                plan = Plan(
+                    stats_data=[],
+                    distribution_plan=[{"host": "127.0.0.1", "comms_port": 5001}],
+                    model=model,
+                    data_segmentation_plan=[
+                        {
+                            "host": "127.0.0.1",
+                            "comms_port": 5001,
+                            "segments": [{"file_location": "test.txt"}]
+                        }
+                    ],
+                )
+                mock_plan_data.return_value = plan
+                mock_plan_model.return_value = {}
+                
+                # Mock execute_data_plan to set distribution state
+                def mock_exec_data_side_effect(plan, data, session):
+                    if session:
+                        session.data_distribution_state = {
+                            "machines": {
+                                "127.0.0.1:5001": {
+                                    "status": "success",
+                                    "host": "127.0.0.1",
+                                    "comms_port": 5001,
+                                    "attempts": 1,
+                                }
+                            },
+                            "failed_machines": [],
+                            "retry_attempts": {},
+                        }
+                        session.status = SessionStatus.RUNNING
+                
+                mock_exec_data.side_effect = mock_exec_data_side_effect
+                
+                # Mock execute_model_plan to set distribution state
+                def mock_exec_model_side_effect(session, model):
+                    if session:
+                        session.model_distribution_state = {
+                            "nodes": {
+                                "127.0.0.1:5001:0": {
+                                    "status": "success",
+                                    "host": "127.0.0.1",
+                                    "comms_port": 5001,
+                                    "shard_number": 0,
+                                    "attempts": 1,
+                                }
+                            },
+                            "failed_nodes": [],
+                            "retry_attempts": {},
+                        }
+                        session.status = SessionStatus.RUNNING
+                
+                mock_exec_model.side_effect = mock_exec_model_side_effect
+                
+                # Import the function
+                from mosaic.session_commands import _create_session_simple
+                
+                # Execute
+                result = _create_session_simple(output_fn)
+                
+                # Verify session was created and added before distribution
+                assert mock_session_manager.add_session.called
+                assert created_session is not None
+                assert created_session.status == SessionStatus.RUNNING
+                
+                # Verify execute_data_plan was called with session
+                mock_exec_data.assert_called_once()
+                call_args = mock_exec_data.call_args
+                assert call_args[0][2] == created_session  # session parameter
+                
+                # Verify execute_model_plan was called with session
+                mock_exec_model.assert_called_once()
+                call_args = mock_exec_model.call_args
+                assert call_args[0][0] == created_session  # session parameter
+                
+                # Verify distribution state was tracked
+                assert "machines" in created_session.data_distribution_state
+                assert "nodes" in created_session.model_distribution_state
+                
+                # Verify session was updated
+                assert mock_session_manager.update_session.called
+                
+        finally:
+            initialize(None, None, [], MosaicConfig(), None)
+
+    def test_create_session_simple_handles_distribution_errors(self, tmp_path, temp_state_dir):
+        """Test that _create_session_simple handles distribution errors and sets ERROR status."""
+        output_lines = []
+        input_responses = [
+            "1",  # Select first model
+            "1",  # Select first dataset (or manual entry)
+            "text",  # Data type for manual entry
+            "yes",  # Confirm execution
+        ]
+        
+        def output_fn(text: str) -> None:
+            output_lines.append(text)
+        
+        def input_fn(prompt: str) -> str:
+            if input_responses:
+                return input_responses.pop(0)
+            return "cancel"
+        
+        # Create test data directory
+        data_dir = tmp_path / "data"
+        data_dir.mkdir(exist_ok=True)
+        test_file = data_dir / "test.txt"
+        test_file.write_text("test data")
+        
+        config = create_test_config_with_state(state_dir=temp_state_dir, data_location=str(data_dir))
+        mock_beacon = MagicMock()
+        mock_beacon.collect_stats.return_value = [
+            {"host": "127.0.0.1", "comms_port": 5001, "connection_status": "online", "cpu_percent": 50.0}
+        ]
+        
+        mock_session_manager = MagicMock()
+        created_session = None
+        
+        def add_session(session):
+            nonlocal created_session
+            created_session = session
+            return session.id
+        
+        mock_session_manager.add_session.side_effect = add_session
+        mock_session_manager.update_session.return_value = True
+        
+        model = Model(name="test_model", model_type=ModelType.CNN)
+        
+        initialize(mock_beacon, mock_session_manager, [model], config, input_fn)
+        try:
+            with patch("mosaic.session_commands.plan_static_weighted_shards") as mock_plan_shards, \
+                 patch("mosaic.session_commands.plan_data_distribution") as mock_plan_data, \
+                 patch("mosaic.session_commands.plan_model") as mock_plan_model, \
+                 patch("mosaic.session_commands._beacon.execute_data_plan") as mock_exec_data, \
+                 patch("mosaic.session_commands._beacon.execute_model_plan") as mock_exec_model:
+                
+                # Setup mocks
+                mock_plan_shards.return_value = [
+                    {"host": "127.0.0.1", "comms_port": 5001, "capacity_fraction": 1.0}
+                ]
+                
+                plan = Plan(
+                    stats_data=[],
+                    distribution_plan=[{"host": "127.0.0.1", "comms_port": 5001}],
+                    model=model,
+                    data_segmentation_plan=[
+                        {
+                            "host": "127.0.0.1",
+                            "comms_port": 5001,
+                            "segments": [{"file_location": "test.txt"}]
+                        }
+                    ],
+                )
+                mock_plan_data.return_value = plan
+                mock_plan_model.return_value = {}
+                
+                # Mock execute_data_plan to simulate error
+                def mock_exec_data_side_effect(plan, data, session):
+                    if session:
+                        session.data_distribution_state = {
+                            "machines": {
+                                "127.0.0.1:5001": {
+                                    "status": "failed",
+                                    "host": "127.0.0.1",
+                                    "comms_port": 5001,
+                                    "error": "No capable nodes remaining",
+                                    "attempts": 1,
+                                }
+                            },
+                            "failed_machines": [{"host": "127.0.0.1", "comms_port": 5001}],
+                            "retry_attempts": {},
+                            "final_error": "No capable nodes remaining",
+                        }
+                        session.status = SessionStatus.ERROR
+                
+                mock_exec_data.side_effect = mock_exec_data_side_effect
+                
+                # Import the function
+                from mosaic.session_commands import _create_session_simple
+                
+                # Execute
+                result = _create_session_simple(output_fn)
+                
+                # Verify session status is ERROR
+                assert created_session is not None
+                assert created_session.status == SessionStatus.ERROR
+                assert "final_error" in created_session.data_distribution_state
+                
+                # Verify session was updated with ERROR status
+                update_calls = [call for call in mock_session_manager.update_session.call_args_list]
+                # Should have at least one update call with ERROR status
+                error_updates = [
+                    call for call in update_calls
+                    if len(call[0]) > 1 and call[0][1] == SessionStatus.ERROR
+                ]
+                assert len(error_updates) > 0
                 
         finally:
             initialize(None, None, [], MosaicConfig(), None)
