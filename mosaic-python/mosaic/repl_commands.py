@@ -109,6 +109,8 @@ Available commands:
   rhb                    - Show receive heartbeat statuses
   hb                     - Show both send and receive heartbeat statuses
   calcd [method]         - Calculate distribution (method: weighted_shard or weighted_batches)
+  create_session         - Create a new session (interactive Q&A)
+  delete_session [id]    - Delete a session (prompts if id not provided)
   help                   - Show this help message
   exit/quit/q            - Exit the REPL
 """
@@ -140,6 +142,13 @@ def process_command(command: str, output_fn: Callable[[str], None]) -> None:
         elif cmd == "calcd":
             method = args[0] if args else None
             execute_calcd(output_fn, method)
+        elif cmd == "create_session" or cmd == "create-session":
+            from mosaic.session_commands import execute_create_session
+            execute_create_session(output_fn)
+        elif cmd == "delete_session" or cmd == "delete-session":
+            from mosaic.session_commands import execute_delete_session
+            session_id = args[0] if args else None
+            execute_delete_session(output_fn, session_id)
         elif cmd == "help":
             execute_help(output_fn)
         else:

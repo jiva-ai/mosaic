@@ -551,6 +551,24 @@ def main() -> None:
     except Exception as e:
         logger.warning(f"Error initializing REPL commands: {e}")
     
+    # Step 3.6: Initialize session commands
+    try:
+        from mosaic.session_commands import initialize as init_session_commands
+        # Create input function that works in both Textual and simple REPL
+        def get_input(prompt: str) -> str:
+            """Get user input, works in both Textual and simple REPL."""
+            try:
+                # Try to get input from Textual app if available
+                # For now, use standard input
+                return input(prompt)
+            except (EOFError, KeyboardInterrupt):
+                raise
+        
+        init_session_commands(_beacon, _session_manager, _models, config, input_fn=get_input)
+        logger.debug("Session commands initialized")
+    except Exception as e:
+        logger.warning(f"Error initializing session commands: {e}")
+    
     # Step 4: Start REPL if enabled
     if repl_enabled:
         if args.textual:
