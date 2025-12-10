@@ -480,7 +480,10 @@ class TestDistributionRetryLogic:
                 assert session.data_distribution_state["machines"][node2_key]["status"] == "failed"
                 
                 # Node 3 should also be marked as failed (either as original or retry)
-                # Check that we have at least 2 failed machines in the machines dict
+                assert node3_key in session.data_distribution_state["machines"]
+                assert session.data_distribution_state["machines"][node3_key]["status"] == "failed"
+                
+                # Verify we have at least 2 failed machines
                 failed_count = sum(
                     1 for m in session.data_distribution_state["machines"].values()
                     if m.get("status") == "failed"
