@@ -215,6 +215,7 @@ class Plan:
     model_id: Optional[str] = None  # ID of the model (Model objects are not persisted, loaded lazily)
     data_segmentation_plan: Optional[List[Dict[str, Any]]] = None  # Plan for data sharding across machines
     id: str = field(default_factory=lambda: str(uuid.uuid4()))  # Unique identifier
+    session_id: Optional[str] = None  # ID of the originating session (for shard sessions)
     _model: Optional[Model] = field(default=None, init=False, repr=False)  # Lazy-loaded model
     _model_loader: Optional[Any] = field(default=None, init=False, repr=False)  # Function to load model by ID
     
@@ -226,6 +227,7 @@ class Plan:
         model_id: Optional[str] = None,
         data_segmentation_plan: Optional[List[Dict[str, Any]]] = None,
         id: Optional[str] = None,
+        session_id: Optional[str] = None,
     ):
         """
         Initialize Plan instance.
@@ -237,11 +239,13 @@ class Plan:
             model_id: Model ID (required if model is not provided)
             data_segmentation_plan: Optional plan for data sharding
             id: Optional unique identifier
+            session_id: Optional ID of the originating session (for shard sessions)
         """
         self.stats_data = stats_data
         self.distribution_plan = distribution_plan
         self.data_segmentation_plan = data_segmentation_plan
         self.id = id if id is not None else str(uuid.uuid4())
+        self.session_id = session_id
         self._model = None
         self._model_loader = None
         
@@ -296,6 +300,7 @@ class Plan:
             'model_id': model_id,
             'data_segmentation_plan': self.data_segmentation_plan,
             'id': self.id,
+            'session_id': self.session_id,
         }
         return state
     
@@ -306,6 +311,7 @@ class Plan:
         self.model_id = state['model_id']
         self.data_segmentation_plan = state.get('data_segmentation_plan')
         self.id = state['id']
+        self.session_id = state.get('session_id')
         self._model = None
         self._model_loader = None
 
@@ -326,6 +332,7 @@ class Session:
     # Distribution state tracking
     data_distribution_state: Dict[str, Any] = field(default_factory=dict)  # Track data distribution success/failure per node
     model_distribution_state: Dict[str, Any] = field(default_factory=dict)  # Track model distribution success/failure per node
+    parent_id: Optional[str] = None  # ID of parent session (if this is a shard session)
 
     def __init__(
         self,
@@ -339,6 +346,7 @@ class Session:
         id: Optional[str] = None,
         data_distribution_state: Optional[Dict[str, Any]] = None,
         model_distribution_state: Optional[Dict[str, Any]] = None,
+        parent_id: Optional[str] = None,
     ):
         """
         Initialize Session instance.
@@ -354,6 +362,7 @@ class Session:
             id: Optional unique identifier. If not provided, generates a new UUID.
             data_distribution_state: Optional initial data distribution state
             model_distribution_state: Optional initial model distribution state
+            parent_id: Optional ID of parent session (if this is a shard session)
         """
         self.plan = plan
         self.data = data
@@ -365,6 +374,7 @@ class Session:
         self._model_loader = None
         self.data_distribution_state = data_distribution_state if data_distribution_state is not None else {}
         self.model_distribution_state = model_distribution_state if model_distribution_state is not None else {}
+        self.parent_id = parent_id
         
         if model is not None:
             self._model = model
@@ -422,6 +432,7 @@ class Session:
             'id': self.id,
             'data_distribution_state': self.data_distribution_state,
             'model_distribution_state': self.model_distribution_state,
+            'parent_id': self.parent_id,
         }
         return state
     
@@ -441,6 +452,7 @@ class Session:
         self.id = state['id']
         self.data_distribution_state = state.get('data_distribution_state', {})
         self.model_distribution_state = state.get('model_distribution_state', {})
+        self.parent_id = state.get('parent_id')
         self._model = None
         self._model_loader = None
 

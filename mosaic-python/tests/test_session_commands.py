@@ -554,7 +554,7 @@ class TestExecuteCreateSession:
         output_lines = []
         input_responses = [
             "1",  # Select first model
-            "1",  # Select first dataset (or manual entry)
+            "test.txt",  # Manual dataset path entry (when no datasets found)
             "text",  # Data type for manual entry
             "yes",  # Confirm execution
         ]
@@ -598,9 +598,11 @@ class TestExecuteCreateSession:
                  patch("mosaic.session_commands.plan_data_distribution") as mock_plan_data, \
                  patch("mosaic.session_commands.plan_model") as mock_plan_model, \
                  patch("mosaic.session_commands._beacon.execute_data_plan") as mock_exec_data, \
-                 patch("mosaic.session_commands._beacon.execute_model_plan") as mock_exec_model:
+                 patch("mosaic.session_commands._beacon.execute_model_plan") as mock_exec_model, \
+                 patch("mosaic.session_commands._discover_datasets") as mock_discover:
                 
                 # Setup mocks
+                mock_discover.return_value = []  # No datasets found, will use manual entry
                 mock_plan_shards.return_value = [
                     {"host": "127.0.0.1", "comms_port": 5001, "capacity_fraction": 1.0}
                 ]
@@ -739,9 +741,11 @@ class TestExecuteCreateSession:
                  patch("mosaic.session_commands.plan_data_distribution") as mock_plan_data, \
                  patch("mosaic.session_commands.plan_model") as mock_plan_model, \
                  patch("mosaic.session_commands._beacon.execute_data_plan") as mock_exec_data, \
-                 patch("mosaic.session_commands._beacon.execute_model_plan") as mock_exec_model:
+                 patch("mosaic.session_commands._beacon.execute_model_plan") as mock_exec_model, \
+                 patch("mosaic.session_commands._discover_datasets") as mock_discover:
                 
                 # Setup mocks
+                mock_discover.return_value = []  # No datasets found, will use manual entry
                 mock_plan_shards.return_value = [
                     {"host": "127.0.0.1", "comms_port": 5001, "capacity_fraction": 1.0}
                 ]
@@ -796,11 +800,12 @@ class TestExecuteCreateSession:
                 # Verify session was updated with ERROR status
                 update_calls = [call for call in mock_session_manager.update_session.call_args_list]
                 # Should have at least one update call with ERROR status
+                # update_session is called with keyword arguments: update_session(session.id, status=SessionStatus.ERROR)
                 error_updates = [
                     call for call in update_calls
-                    if len(call[0]) > 1 and call[0][1] == SessionStatus.ERROR
+                    if call[1].get("status") == SessionStatus.ERROR
                 ]
-                assert len(error_updates) > 0
+                assert len(error_updates) > 0, f"No update_session call found with ERROR status. Calls: {update_calls}"
                 
         finally:
             initialize(None, None, [], MosaicConfig(), None)

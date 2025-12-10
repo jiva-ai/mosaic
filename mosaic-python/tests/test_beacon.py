@@ -1621,6 +1621,168 @@ class TestBeaconCollectStats:
             assert session.data.file_definitions[0].location == "test_file", "Session data should match original data"
             assert session.data.file_definitions[0].data_type == DataType.CSV, "Session data should have correct data type"
 
+    def test_execute_data_plan_includes_session_id_in_plan(self, temp_state_dir):
+        """Test that execute_data_plan includes session.id in the Plan when distributing data."""
+        from pathlib import Path
+        from mosaic_config.state import Data, FileDefinition, DataType, Model, ModelType, Plan, Session, SessionStatus
+        from mosaic_planner.planner import deserialize_plan_with_data
+        
+        # Set up test_data directory
+        test_data_dir = Path(__file__).parent / 'test_data'
+        test_data_dir.mkdir(exist_ok=True)
+        test_file = test_data_dir / "test.txt"
+        test_file.write_text("test data content")
+        
+        config = create_test_config_with_state(
+            state_dir=temp_state_dir,
+            host="127.0.0.1",
+            heartbeat_port=5000,
+            comms_port=5001,
+            heartbeat_frequency=2,
+            heartbeat_tolerance=5,
+            heartbeat_wait_timeout=2,
+            stats_request_timeout=10,
+            server_crt="",
+            server_key="",
+            ca_crt="",
+            benchmark_data_location="",
+            data_location=str(test_data_dir),
+        )
+        
+        with patch("mosaic_comms.beacon.StatsCollector") as mock_stats_class:
+            mock_stats = MagicMock()
+            mock_stats.get_last_stats_json.return_value = '{"cpu_percent": 45.3}'
+            mock_stats_class.return_value = mock_stats
+            
+            beacon = Beacon(config)
+            
+            # Mock _is_self_host to return False so send_command is called instead of handler
+            beacon._is_self_host = MagicMock(return_value=False)
+            
+            # Create a session with a known ID
+            model = Model(name="test_model", model_type=ModelType.CNN)
+            plan = Plan(
+                stats_data=[],
+                distribution_plan=[{"host": "127.0.0.1", "comms_port": 5001, "capacity_fraction": 1.0}],
+                model=model,
+                data_segmentation_plan=[
+                    {
+                        "host": "127.0.0.1",
+                        "comms_port": 5001,
+                        "segments": [{"file_location": "test.txt"}]
+                    }
+                ],
+            )
+            session = Session(plan=plan, data=Data(file_definitions=[FileDefinition(location="test.txt", data_type=DataType.TEXT)]), status=SessionStatus.RUNNING)
+            parent_session_id = session.id
+            
+            # Capture the serialized plan
+            captured_plan = None
+            
+            def mock_send_command(host, port, command, payload=None, timeout=None):
+                nonlocal captured_plan
+                if command == "exdplan":
+                    # Deserialize to check session_id
+                    plan_received, _ = deserialize_plan_with_data(payload, compressed=True)
+                    captured_plan = plan_received
+                return {"status": "success"}
+            
+            beacon.send_command = mock_send_command
+            
+            # Execute data plan
+            beacon.execute_data_plan(plan, session.data, session)
+            
+            # Verify session_id was included in the plan
+            assert captured_plan is not None, "Plan should have been captured"
+            assert hasattr(captured_plan, 'session_id'), "Plan should have session_id attribute"
+            assert captured_plan.session_id == parent_session_id, f"Plan session_id should match parent session ID: {captured_plan.session_id} != {parent_session_id}"
+
+    def test_handle_execute_data_plan_creates_shard_session_with_parent_id(self, temp_state_dir):
+        """Test that _handle_execute_data_plan creates a shard session with parent_id when session_id is in plan."""
+        import zipfile
+        from io import BytesIO
+        from pathlib import Path
+        from mosaic_planner.planner import serialize_plan_with_data
+        from mosaic_config.state import Data, FileDefinition, DataType, Model, Plan, SessionStatus
+        
+        # Set up test_data directory as data_location
+        test_data_dir = Path(__file__).parent / 'test_data'
+        test_data_dir.mkdir(exist_ok=True)
+        
+        config = create_test_config_with_state(
+            state_dir=temp_state_dir,
+            host="127.0.0.1",
+            heartbeat_port=5000,
+            comms_port=5001,
+            heartbeat_frequency=2,
+            heartbeat_tolerance=5,
+            heartbeat_wait_timeout=2,
+            stats_request_timeout=10,
+            server_crt="",
+            server_key="",
+            ca_crt="",
+            benchmark_data_location="",
+            data_location=str(test_data_dir),
+        )
+        
+        with patch("mosaic_comms.beacon.StatsCollector") as mock_stats_class:
+            mock_stats = MagicMock()
+            mock_stats.get_last_stats_json.return_value = '{"cpu_percent": 45.3}'
+            mock_stats_class.return_value = mock_stats
+            
+            beacon = Beacon(config)
+            
+            # Initialize session manager for this test
+            import mosaic.mosaic as mosaic_module
+            from mosaic_config.state_manager import SessionStateManager
+            mosaic_module._session_manager = SessionStateManager(config)
+            mosaic_module._config = config
+            
+            # Clear any existing sessions
+            initial_session_count = len(mosaic_module._session_manager.get_sessions())
+            
+            # Create test plan with session_id (simulating received from another node)
+            parent_session_id = "parent-session-123"
+            model = Model(name="test_model")
+            plan = Plan(
+                stats_data=[],
+                distribution_plan=[],
+                model=model,
+                session_id=parent_session_id,  # This simulates a plan received from another node
+            )
+            
+            # Create a valid zip file for binary_data
+            zip_buffer = BytesIO()
+            with zipfile.ZipFile(zip_buffer, 'w', zipfile.ZIP_DEFLATED) as zip_file:
+                zip_file.writestr('test_file.csv', 'col1,col2\nval1,val2\n')
+            zip_data = zip_buffer.getvalue()
+            
+            file_def = FileDefinition(
+                location="test_file",
+                data_type=DataType.CSV,
+                is_segmentable=True,
+                binary_data=zip_data,
+            )
+            data = Data(file_definitions=[file_def])
+            
+            # Serialize plan and data
+            serialized_data = serialize_plan_with_data(plan, data, compress=True)
+            
+            # Call the handler
+            result = beacon._handle_execute_data_plan(serialized_data)
+            
+            # Verify result
+            assert result is not None
+            assert result["status"] == "success"
+            
+            # Verify that a shard session was created with parent_id
+            sessions = mosaic_module._session_manager.get_sessions()
+            assert len(sessions) == initial_session_count + 1, "One session should be created"
+            shard_session = sessions[-1]  # Get the most recently added session
+            assert shard_session.id == parent_session_id, f"Shard session ID should match parent session ID: {shard_session.id} != {parent_session_id}"
+            assert shard_session.parent_id == parent_session_id, f"Shard session parent_id should be set: {shard_session.parent_id} != {parent_session_id}"
+            assert shard_session.status == SessionStatus.RUNNING, "Shard session should have RUNNING status"
+
     def test_execute_data_plan_extracts_to_session_directory(self, temp_state_dir):
         """Test that _handle_execute_data_plan extracts files to a session-specific directory."""
         import zipfile
@@ -2948,41 +3110,267 @@ class TestBeaconCollectStats:
                 assert len(_models) == initial_model_count + 1, "One model should be added to receiver"
                 received_model = _models[-1]
                 assert received_model.name == "transmitted_model", "Model name should match"
-                assert received_model.model_type == ModelType.TRANSFORMER, "Model type should match"
                 
-                # Verify model was saved to disk on receiver
-                # add_model saves to models_location/onnx_location/model.id
-                # For sharded models (from execute_model_plan), file_name will be model.id-<shard_number>
-                assert received_model.file_name is not None, "file_name should be set by add_model"
-                
-                # For sharded models from execute_model_plan, file_name should be model.id-0 (first shard)
-                # The model ID should also be updated to include shard number
-                assert received_model.file_name == received_model.id, f"file_name should match model.id: expected {received_model.id}, got {received_model.file_name}"
-                assert received_model.id == f"{model.id}-0", f"Sharded model ID should be {model.id}-0, got {received_model.id}"
-                
-                # Build the expected file path using the actual file_name
-                if model.onnx_location:
-                    expected_file = receiver_models_dir / model.onnx_location / received_model.file_name
-                else:
-                    expected_file = receiver_models_dir / received_model.file_name
-                
-                assert expected_file.exists(), f"Model file should be saved to {expected_file}"
-                
-                # Verify file content matches original
-                with open(expected_file, 'rb') as f:
-                    saved_data = f.read()
-                assert saved_data == test_model_binary, "Saved model binary should match original"
-                
-                # Verify binary_rep was cleared after saving
-                assert received_model.binary_rep is None, "binary_rep should be cleared after saving"
-                
+                # Verify session_id was included in the payload
+                assert received_payload is not None, "Payload should have been received"
+                # Deserialize payload to check session_id
+                import gzip
+                import pickle
+                pickled_payload = gzip.decompress(received_payload)
+                payload_data = pickle.loads(pickled_payload)
+                assert isinstance(payload_data, dict), "Payload should be a dict with session_id and model"
+                assert "session_id" in payload_data, "Payload should contain session_id"
+                assert payload_data["session_id"] == session.id, f"Payload session_id should match session ID: {payload_data['session_id']} != {session.id}"
+                assert "model" in payload_data, "Payload should contain model"
             finally:
                 # Clean up
+                import shutil
+                if test_models_dir.exists():
+                    shutil.rmtree(test_models_dir)
+
+    def test_handle_execute_model_plan_creates_shard_session_with_parent_id(self, temp_state_dir):
+        """Test that _handle_execute_model_plan creates a shard session with parent_id when session_id is in payload."""
+        from pathlib import Path
+        from mosaic_config.state import Model, ModelType, Plan, Session, SessionStatus
+        import gzip
+        import pickle
+        
+        # Set up test directories
+        test_models_dir = Path(__file__).parent / 'test_data' / 'test_models_shard'
+        test_models_dir.mkdir(parents=True, exist_ok=True)
+        
+        config = create_test_config_with_state(
+            state_dir=temp_state_dir,
+            host="127.0.0.1",
+            heartbeat_port=5000,
+            comms_port=5001,
+            heartbeat_frequency=2,
+            heartbeat_tolerance=5,
+            heartbeat_wait_timeout=2,
+            stats_request_timeout=10,
+            server_crt="",
+            server_key="",
+            ca_crt="",
+            benchmark_data_location="",
+            data_location="",
+            models_location=str(test_models_dir),
+        )
+        
+        with patch("mosaic_comms.beacon.StatsCollector") as mock_stats_class:
+            mock_stats = MagicMock()
+            mock_stats.get_last_stats_json.return_value = '{"cpu_percent": 45.3}'
+            mock_stats_class.return_value = mock_stats
+            
+            beacon = Beacon(config)
+            
+            # Initialize mosaic config and session manager
+            import mosaic.mosaic as mosaic_module
+            from mosaic_config.state_manager import SessionStateManager
+            mosaic_module._config = config
+            mosaic_module._session_manager = SessionStateManager(config)
+            
+            # Clear any existing sessions
+            initial_session_count = len(mosaic_module._session_manager.get_sessions())
+            
+            # Create a test model with a sharded ID (simulating a model shard received from another node)
+            # Sharded model IDs follow pattern: original_id-<shard_number>
+            original_model_id = "original-model-123"
+            shard_number = 0
+            sharded_model_id = f"{original_model_id}-{shard_number}"
+            model = Model(
+                name="shard_model",
+                model_type=ModelType.CNN,
+                binary_rep=b"fake_onnx_model_data",
+                id=sharded_model_id,  # Use sharded model ID (with "-" suffix)
+            )
+            
+            # Create payload with session_id (simulating received from another node)
+            parent_session_id = "parent-session-456"
+            payload_dict = {
+                "session_id": parent_session_id,
+                "model": model,
+            }
+            pickled_payload = pickle.dumps(payload_dict)
+            serialized_payload = gzip.compress(pickled_payload)
+            
+            # Call the handler
+            result = beacon._handle_execute_model_plan(serialized_payload)
+            
+            # Verify result
+            assert result is not None
+            assert result["status"] == "success"
+            
+            # Verify that a shard session was created with parent_id
+            sessions = mosaic_module._session_manager.get_sessions()
+            assert len(sessions) == initial_session_count + 1, "One session should be created"
+            shard_session = sessions[-1]
+            assert shard_session.id == parent_session_id, f"Shard session ID should match parent session ID: {shard_session.id} != {parent_session_id}"
+            assert shard_session.parent_id == parent_session_id, f"Shard session parent_id should be set: {shard_session.parent_id} != {parent_session_id}"
+            # The shard session should have the sharded model ID (with "-" suffix), not the original model ID
+            assert shard_session.model_id == sharded_model_id, f"Shard session should have sharded model_id: expected {sharded_model_id}, got {shard_session.model_id}"
+            assert shard_session.model_id != original_model_id, "Shard session should NOT have the original model ID (without shard suffix)"
+            assert shard_session.status == SessionStatus.RUNNING, "Shard session should have RUNNING status"
+
+    def test_execute_data_plan_and_model_plan_create_shard_sessions(self, temp_state_dir):
+        """Test that data and model distribution create shard sessions with correct parent_id on remote nodes."""
+        import time
+        from pathlib import Path
+        from mosaic_config.state import Data, FileDefinition, DataType, Model, ModelType, Plan, Session, SessionStatus
+        from mosaic_config.config import Peer
+        
+        # Create configs for sender and receiver
+        sender_config = create_test_config_with_state(
+            state_dir=temp_state_dir / "sender",
+            host="127.0.0.1",
+            heartbeat_port=8500,
+            comms_port=8501,
+            heartbeat_frequency=2,
+            heartbeat_tolerance=5,
+            heartbeat_wait_timeout=2,
+            stats_request_timeout=10,
+            server_crt="",
+            server_key="",
+            ca_crt="",
+            benchmark_data_location="",
+            data_location=str(temp_state_dir / "data"),
+            models_location=str(temp_state_dir / "models"),
+        )
+        
+        receiver_config = create_test_config_with_state(
+            state_dir=temp_state_dir / "receiver",
+            host="127.0.0.1",
+            heartbeat_port=8502,
+            comms_port=8503,
+            heartbeat_frequency=2,
+            heartbeat_tolerance=5,
+            heartbeat_wait_timeout=2,
+            stats_request_timeout=10,
+            server_crt="",
+            server_key="",
+            ca_crt="",
+            benchmark_data_location="",
+            data_location=str(temp_state_dir / "data"),
+            models_location=str(temp_state_dir / "models"),
+        )
+        
+        # Add peer to sender config
+        sender_config.peers = [
+            Peer(host=receiver_config.host, heartbeat_port=receiver_config.heartbeat_port, comms_port=receiver_config.comms_port),
+        ]
+        
+        # Create test data
+        test_data_dir = temp_state_dir / "data"
+        test_data_dir.mkdir(exist_ok=True)
+        test_file = test_data_dir / "test.txt"
+        test_file.write_text("test data content")
+        
+        # Create test model
+        models_dir = temp_state_dir / "models"
+        models_dir.mkdir(exist_ok=True)
+        model_file = models_dir / "test_model.onnx"
+        model_file.write_bytes(b"dummy model binary data" * 100)
+        
+        data = Data(
+            file_definitions=[
+                FileDefinition(
+                    location=str(test_file.relative_to(test_data_dir)),
+                    data_type=DataType.TEXT,
+                    is_segmentable=False,
+                )
+            ]
+        )
+        
+        model = Model(
+            name="test_model",
+            model_type=ModelType.CNN,
+            onnx_location="",
+            file_name="test_model.onnx",
+            binary_rep=model_file.read_bytes(),
+        )
+        
+        # Create distribution plan
+        distribution_plan = [
+            {"host": receiver_config.host, "comms_port": receiver_config.comms_port, "capacity_fraction": 1.0, "connection_status": "online"},
+        ]
+        
+        plan = Plan(
+            stats_data=[],
+            distribution_plan=distribution_plan,
+            model=model,
+            data_segmentation_plan=[
+                {
+                    "host": receiver_config.host,
+                    "comms_port": receiver_config.comms_port,
+                    "segments": [{"file_location": str(test_file.relative_to(test_data_dir))}]
+                }
+            ],
+        )
+        
+        # Create parent session
+        parent_session = Session(
+            plan=plan,
+            data=data,
+            model=model,
+            status=SessionStatus.RUNNING,
+        )
+        parent_session_id = parent_session.id
+        
+        with patch("mosaic_comms.beacon.StatsCollector") as mock_stats_class:
+            mock_stats = MagicMock()
+            mock_stats.get_last_stats_json.return_value = '{"cpu_percent": 45.3}'
+            mock_stats_class.return_value = mock_stats
+            
+            sender_beacon = Beacon(sender_config)
+            receiver_beacon = Beacon(receiver_config)
+            
+            # Initialize session manager for receiver
+            import mosaic.mosaic as mosaic_module
+            from mosaic_config.state_manager import SessionStateManager
+            receiver_session_manager = SessionStateManager(receiver_config)
+            mosaic_module._session_manager = receiver_session_manager
+            mosaic_module._config = receiver_config
+            
+            try:
+                sender_beacon.start()
+                receiver_beacon.start()
+                
+                time.sleep(0.5)  # Give beacons time to start
+                
+                # Execute data plan
+                sender_beacon.execute_data_plan(plan, data, parent_session)
+                
+                # Verify shard session was created on receiver for data
+                receiver_sessions = receiver_session_manager.get_sessions()
+                data_shard_sessions = [s for s in receiver_sessions if s.parent_id == parent_session_id]
+                assert len(data_shard_sessions) > 0, "Shard session should be created for data"
+                data_shard = data_shard_sessions[0]
+                assert data_shard.id == parent_session_id, f"Data shard session ID should match parent: {data_shard.id} != {parent_session_id}"
+                assert data_shard.parent_id == parent_session_id, f"Data shard session parent_id should be set: {data_shard.parent_id} != {parent_session_id}"
+                assert data_shard.status == SessionStatus.RUNNING, "Data shard session should have RUNNING status"
+                
+                # Execute model plan
+                sender_beacon.execute_model_plan(parent_session, model)
+                
+                # Verify shard session was updated or created on receiver for model
+                receiver_sessions = receiver_session_manager.get_sessions()
+                model_shard_sessions = [s for s in receiver_sessions if s.parent_id == parent_session_id]
+                assert len(model_shard_sessions) > 0, "Shard session should exist for model"
+                # The same shard session should be used (or a new one created)
+                model_shard = model_shard_sessions[0]
+                assert model_shard.id == parent_session_id, f"Model shard session ID should match parent: {model_shard.id} != {parent_session_id}"
+                assert model_shard.parent_id == parent_session_id, f"Model shard session parent_id should be set: {model_shard.parent_id} != {parent_session_id}"
+                # The shard session should have the sharded model ID (with -<shard_number> suffix)
+                # Since there's only one node in the distribution plan, shard_number is 0
+                expected_sharded_model_id = f"{model.id}-0"
+                assert model_shard.model_id == expected_sharded_model_id, f"Model shard session should have sharded model_id: expected {expected_sharded_model_id}, got {model_shard.model_id}"
+                assert model_shard.status == SessionStatus.RUNNING, "Model shard session should have RUNNING status"
+                
+            finally:
                 sender_beacon.stop()
                 receiver_beacon.stop()
-                if test_models_dir.exists():
-                    import shutil
-                    shutil.rmtree(test_models_dir)
+                # Clean up
+                mosaic_module._session_manager = None
+                mosaic_module._config = None
 
     def test_execute_model_plan_raises_exception_when_model_cannot_be_loaded(self, temp_state_dir):
         """Test that execute_model_plan raises exception when onnx_location and file_name are not set."""

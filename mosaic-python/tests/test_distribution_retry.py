@@ -245,8 +245,10 @@ class TestDistributionRetryLogic:
                 # Patch send_command to make receiver2 fail on first attempt
                 original_send_command = sender_beacon.send_command
                 node2_attempts = {"count": 0}
+                captured_plan = None
                 
                 def mock_send_command(host, port, command, payload, timeout=None):
+                    nonlocal captured_plan
                     # Track attempts to node 2 for any data plan command
                     if host == receiver2_config.host and port == receiver2_config.comms_port:
                         if command in ("exdplan", "exdplan_chunk", "exdplan_finalize"):
@@ -256,6 +258,10 @@ class TestDistributionRetryLogic:
                     # For retry to node 3, call the handler directly
                     if host == receiver3_config.host and port == receiver3_config.comms_port:
                         if command == "exdplan":
+                            # Capture plan to verify session_id
+                            from mosaic_planner.planner import deserialize_plan_with_data
+                            plan_received, _ = deserialize_plan_with_data(payload, compressed=True)
+                            captured_plan = plan_received
                             # Call receiver3's handler directly
                             return receiver3_beacon._handle_execute_data_plan(payload)
                         elif command == "exdplan_chunk":
@@ -304,6 +310,11 @@ class TestDistributionRetryLogic:
                 # (status might be RUNNING now if recovery succeeded)
                 # Check retry_attempts to verify retry happened
                 assert len(session.data_distribution_state["retry_attempts"]) > 0
+                
+                # Verify session_id was transmitted in the plan
+                assert captured_plan is not None, "Plan should have been captured"
+                assert hasattr(captured_plan, 'session_id'), "Plan should have session_id attribute"
+                assert captured_plan.session_id == session.id, f"Plan session_id should match parent session ID: {captured_plan.session_id} != {session.id}"
                 
             finally:
                 sender_beacon.stop()
@@ -605,8 +616,10 @@ class TestDistributionRetryLogic:
                 # Patch send_command to make receiver2 fail on first attempt
                 original_send_command = sender_beacon.send_command
                 node2_attempts = {"count": 0}
+                captured_payload = None
                 
                 def mock_send_command(host, port, command, payload, timeout=None):
+                    nonlocal captured_payload
                     # Track attempts to node 2 for any model plan command
                     if host == receiver2_config.host and port == receiver2_config.comms_port:
                         if command in ("exmplan", "exmplan_chunk", "exmplan_finalize"):
@@ -616,6 +629,8 @@ class TestDistributionRetryLogic:
                     # For retry to node 3, call the handler directly
                     if host == receiver3_config.host and port == receiver3_config.comms_port:
                         if command == "exmplan":
+                            # Capture payload to verify session_id
+                            captured_payload = payload
                             # Call receiver3's handler directly
                             return receiver3_beacon._handle_execute_model_plan(payload)
                         elif command == "exmplan_chunk":
@@ -649,6 +664,16 @@ class TestDistributionRetryLogic:
                 
                 # At least one distribution should have succeeded
                 assert final_success_count >= 1
+                
+                # Verify session_id was transmitted in the model payload
+                assert captured_payload is not None, "Payload should have been captured"
+                import gzip
+                import pickle
+                pickled_payload = gzip.decompress(captured_payload)
+                payload_data = pickle.loads(pickled_payload)
+                assert isinstance(payload_data, dict), "Payload should be a dict with session_id and model"
+                assert "session_id" in payload_data, "Payload should contain session_id"
+                assert payload_data["session_id"] == session.id, f"Payload session_id should match session ID: {payload_data['session_id']} != {session.id}"
                 
             finally:
                 sender_beacon.stop()

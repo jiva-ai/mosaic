@@ -1274,7 +1274,12 @@ class TestModelSharding:
                     import gzip
                     import pickle
                     pickled = gzip.decompress(payload)
-                    received_model = pickle.loads(pickled)
+                    payload_data = pickle.loads(pickled)
+                    # Handle both old format (just model) and new format (dict with session_id and model)
+                    if isinstance(payload_data, dict) and "model" in payload_data:
+                        received_model = payload_data["model"]
+                    else:
+                        received_model = payload_data
                     received_models.append({
                         "host": host,
                         "port": port,

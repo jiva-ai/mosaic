@@ -1204,6 +1204,7 @@ class Beacon:
         machine_plan: Dict[str, Any],
         plan: Plan,
         file_def_map: Dict[str, FileDefinition],
+        session: Optional[Session] = None,
     ) -> None:
         """
         Send data to a single machine (helper method for threading).
@@ -1212,6 +1213,7 @@ class Beacon:
             machine_plan: Machine plan dictionary with host, comms_port, and segments
             plan: Original Plan object
             file_def_map: Mapping of file location to FileDefinition
+            session: Optional Session object for session_id tracking
         """
         host = machine_plan.get("host")
         comms_port = machine_plan.get("comms_port")
@@ -1258,11 +1260,14 @@ class Beacon:
         # Serialize plan and data for this machine
         try:
             # Create a machine-specific plan (just the segments for this machine)
+            # Include session_id from the session if available
+            session_id = session.id if session is not None else None
             machine_plan_obj = Plan(
                 stats_data=plan.stats_data,
                 distribution_plan=plan.distribution_plan,
                 model=plan.model,
                 data_segmentation_plan=[machine_plan],  # Only this machine's plan
+                session_id=session_id,
             )
             
             serialized_data = serialize_plan_with_data(machine_plan_obj, machine_data)
@@ -1471,7 +1476,7 @@ class Beacon:
                     session.data_distribution_state["retry_attempts"][machine_key] += 1
                 
                 # Send data to machine
-                self._send_data_to_machine(machine_plan, plan, file_def_map)
+                self._send_data_to_machine(machine_plan, plan, file_def_map, session)
                 
                 # Mark as successful
                 if session is not None:
@@ -1643,9 +1648,15 @@ class Beacon:
             machine_info["model_file_name"] = sharded_model.file_name
             
             # Serialize sharded model for transmission
+            # Include session_id in the payload so receiver can create shard session
             try:
-                pickled_model = pickle.dumps(sharded_model)
-                serialized_sharded_model = gzip.compress(pickled_model)
+                # Create payload dict with session_id and model
+                payload_dict = {
+                    "session_id": session.id,
+                    "model": sharded_model,
+                }
+                pickled_payload = pickle.dumps(payload_dict)
+                serialized_sharded_model = gzip.compress(pickled_payload)
             except Exception as e:
                 logger.error(f"Error serializing sharded model: {e}")
                 session.model_distribution_state["nodes"][node_key] = {
@@ -1820,17 +1831,67 @@ class Beacon:
             return {"status": "error", "message": "Payload must be bytes"}
         
         try:
-            # Deserialize model
+            # Deserialize payload
             # Decompress
-            pickled_model = gzip.decompress(payload)
+            pickled_payload = gzip.decompress(payload)
             # Unpickle
-            model = pickle.loads(pickled_model)
+            payload_data = pickle.loads(pickled_payload)
             
-            # Import add_model from mosaic (inside function to avoid circular import)
-            from mosaic.mosaic import add_model
+            # Handle both old format (just model) and new format (dict with session_id and model)
+            if isinstance(payload_data, dict) and "model" in payload_data:
+                # New format with session_id
+                session_id = payload_data.get("session_id")
+                model = payload_data["model"]
+            else:
+                # Old format - just the model (backward compatibility)
+                model = payload_data
+                session_id = None
+            
+            # Import add_model and add_session from mosaic (inside function to avoid circular import)
+            from mosaic.mosaic import add_model, add_session
+            import mosaic.mosaic as mosaic_module
             
             # Add the model
             add_model(model)
+            
+            # Create or update shard session if session_id is provided
+            if session_id is not None:
+                try:
+                    # Check if session with this ID already exists
+                    existing_session = None
+                    if mosaic_module._session_manager is not None:
+                        existing_session = mosaic_module._session_manager.get_session_by_id(session_id)
+                    
+                    if existing_session is None:
+                        # Create a new shard session for this model
+                        # Use the sharded model ID directly (includes -<shard_number> suffix)
+                        # We need a plan - create a minimal one
+                        from mosaic_config.state import Plan
+                        minimal_plan = Plan(
+                            stats_data=[],
+                            distribution_plan=[],
+                            model_id=model.id,  # Use sharded model ID (e.g., "model-123-0")
+                            session_id=session_id,
+                        )
+                        shard_session = Session(
+                            plan=minimal_plan,
+                            model_id=model.id,  # Use sharded model ID (e.g., "model-123-0")
+                            status=SessionStatus.RUNNING,
+                            id=session_id,
+                            parent_id=session_id,  # Parent is the originating session
+                        )
+                        add_session(shard_session)
+                        logger.info(f"Created shard session {session_id} for model {model.name}")
+                    else:
+                        # Update existing session with model reference
+                        # Use the sharded model ID directly
+                        existing_session.model_id = model.id  # Use sharded model ID (e.g., "model-123-0")
+                        if mosaic_module._session_manager is not None:
+                            mosaic_module._session_manager.update_session(existing_session.id, model_id=model.id)
+                        logger.info(f"Updated shard session {session_id} with model {model.name}")
+                except Exception as e:
+                    logger.warning(f"Failed to create/update shard session: {e}")
+                    # Continue even if session creation fails
             
             logger.info(f"Successfully added model {model.name}")
             return {
@@ -1871,6 +1932,9 @@ class Beacon:
                 import mosaic.mosaic as mosaic_module
                 from mosaic.mosaic import add_session
                 
+                # Get session_id from plan (parent session ID)
+                parent_session_id = plan.session_id if hasattr(plan, 'session_id') and plan.session_id else None
+                
                 # Check if session with this plan.id already exists to avoid duplicates
                 if mosaic_module._session_manager is not None:
                     sessions = mosaic_module._session_manager.get_sessions()
@@ -1878,9 +1942,18 @@ class Beacon:
                 else:
                     existing_session = None
                 if existing_session is None:
-                    session = Session(plan=plan, data=data, status=SessionStatus.TRAINING)
+                    # Create shard session with parent_id set to the originating session ID
+                    # Use parent_session_id as the session ID if provided, otherwise generate new one
+                    session_id = parent_session_id if parent_session_id else None
+                    session = Session(
+                        plan=plan,
+                        data=data,
+                        status=SessionStatus.RUNNING,
+                        id=session_id,
+                        parent_id=parent_session_id,
+                    )
                     add_session(session)
-                    logger.info(f"Created session {session.id} for plan {plan.id}")
+                    logger.info(f"Created shard session {session.id} for plan {plan.id} (parent: {parent_session_id})")
                 else:
                     session = existing_session
                     logger.info(f"Using existing session {session.id} for plan {plan.id}")
@@ -2046,6 +2119,9 @@ class Beacon:
                 import mosaic.mosaic as mosaic_module
                 from mosaic.mosaic import add_session
                 
+                # Get session_id from plan (parent session ID)
+                parent_session_id = plan.session_id if hasattr(plan, 'session_id') and plan.session_id else None
+                
                 # Check if session with this plan.id already exists to avoid duplicates
                 if mosaic_module._session_manager is not None:
                     sessions = mosaic_module._session_manager.get_sessions()
@@ -2053,9 +2129,18 @@ class Beacon:
                 else:
                     existing_session = None
                 if existing_session is None:
-                    session = Session(plan=plan, data=data, status=SessionStatus.TRAINING)
+                    # Create shard session with parent_id set to the originating session ID
+                    # Use parent_session_id as the session ID if provided, otherwise generate new one
+                    session_id = parent_session_id if parent_session_id else None
+                    session = Session(
+                        plan=plan,
+                        data=data,
+                        status=SessionStatus.RUNNING,
+                        id=session_id,
+                        parent_id=parent_session_id,
+                    )
                     add_session(session)
-                    logger.info(f"Created session {session.id} for plan {plan.id} (chunked)")
+                    logger.info(f"Created shard session {session.id} for plan {plan.id} (chunked, parent: {parent_session_id})")
                 else:
                     session = existing_session
                     logger.info(f"Using existing session {session.id} for plan {plan.id}")
