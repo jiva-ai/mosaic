@@ -208,7 +208,7 @@ class TestMosaicCommandHandlers:
             model=model,
         )
 
-        session1 = Session(plan=plan1, status=SessionStatus.RUNNING)
+        session1 = Session(plan=plan1, status=SessionStatus.TRAINING)
         session2 = Session(plan=plan2, status=SessionStatus.COMPLETE)
 
         # Set up global sessions list
@@ -228,7 +228,7 @@ class TestMosaicCommandHandlers:
                 assert "time_started" in entry, "Entry should have 'time_started' field"
 
             # Verify specific values
-            assert result[0]["status"] == "running"
+            assert result[0]["status"] == "training"
             assert result[1]["status"] == "complete"
             assert result[0]["plan"]["model"]["name"] == "test_model"
             assert result[1]["plan"]["model"]["name"] == "test_model"
@@ -268,7 +268,7 @@ class TestMosaicCommandHandlers:
             distribution_plan=[{"host": "node1", "allocated_samples": 10}],
             model=model,
         )
-        session1 = Session(plan=plan1, status=SessionStatus.RUNNING)
+        session1 = Session(plan=plan1, status=SessionStatus.TRAINING)
 
         with patch("mosaic_comms.beacon.StatsCollector") as mock_stats_class:
             mock_stats = MagicMock()
@@ -304,7 +304,7 @@ class TestMosaicCommandHandlers:
                     assert response is not None, "send_command should return a response"
                     assert isinstance(response, list), "Response should be a list"
                     assert len(response) == 1, f"Expected 1 session, got {len(response)}"
-                    assert response[0]["status"] == "running"
+                    assert response[0]["status"] == "training"
                     assert response[0]["plan"]["model"]["name"] == "test_model"
                     
                     # Verify IDs are present and persist across beacons
@@ -360,7 +360,7 @@ class TestPlanAndSessionIDs:
             distribution_plan=[{"host": "node1", "allocated_samples": 10}],
             model=model,
         )
-        session1 = Session(plan=plan, status=SessionStatus.RUNNING)
+        session1 = Session(plan=plan, status=SessionStatus.TRAINING)
         session2 = Session(plan=plan, status=SessionStatus.COMPLETE)
         
         # Verify IDs are set
@@ -405,7 +405,7 @@ class TestPlanAndSessionIDs:
             model=model,
         )
         custom_id = "custom-session-id-456"
-        session = Session(plan=plan, status=SessionStatus.RUNNING, id=custom_id)
+        session = Session(plan=plan, status=SessionStatus.TRAINING, id=custom_id)
         
         assert session.id == custom_id, "Session ID should be set to custom value"
 
@@ -430,7 +430,7 @@ class TestAddRemoveSession:
             distribution_plan=[{"host": "node1", "allocated_samples": 10}],
             model=model,
         )
-        session = Session(plan=plan, status=SessionStatus.RUNNING)
+        session = Session(plan=plan, status=SessionStatus.TRAINING)
 
         # Set up global config and empty sessions list
         with patch("mosaic.mosaic._config", config):
@@ -470,7 +470,7 @@ class TestAddRemoveSession:
             distribution_plan=[{"host": "node2", "allocated_samples": 20}],
             model=model,
         )
-        session1 = Session(plan=plan1, status=SessionStatus.RUNNING)
+        session1 = Session(plan=plan1, status=SessionStatus.TRAINING)
         session2 = Session(plan=plan2, status=SessionStatus.COMPLETE)
 
         # Set up global config and sessions list
@@ -506,7 +506,7 @@ class TestAddRemoveSession:
             distribution_plan=[{"host": "node1", "allocated_samples": 10}],
             model=model,
         )
-        session = Session(plan=plan, status=SessionStatus.RUNNING)
+        session = Session(plan=plan, status=SessionStatus.TRAINING)
 
         # Set up global config and sessions list
         with patch("mosaic.mosaic._config", config):
@@ -541,7 +541,7 @@ class TestAddRemoveSession:
             distribution_plan=[{"host": "node2", "allocated_samples": 20}],
             model=model,
         )
-        session1 = Session(plan=plan1, status=SessionStatus.RUNNING)
+        session1 = Session(plan=plan1, status=SessionStatus.TRAINING)
         session2 = Session(plan=plan2, status=SessionStatus.IDLE)
 
         # Set up global config and empty sessions list

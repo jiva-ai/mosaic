@@ -19,6 +19,7 @@ from mosaic_planner import (
     plan_static_weighted_shards,
 )
 from mosaic_planner.state import Model, ModelType, Plan, Session
+from mosaic.state_manager import SessionStateManager
 
 # Set up logging
 logger = logging.getLogger(__name__)
@@ -26,8 +27,8 @@ logger = logging.getLogger(__name__)
 # Global beacon instance (set in main())
 _beacon: Optional[Beacon] = None
 
-# Global state lists (maintained at mosaic.py level)
-_sessions: List[Session] = []
+# Global state management (maintained at mosaic.py level)
+_session_manager: Optional[SessionStateManager] = None
 _models: List[Model] = []
 _config: Optional[MosaicConfig] = None
 
@@ -198,8 +199,10 @@ def _handle_sessions_command(payload: Dict[str, Any]) -> List[Dict[str, Any]]:
     Returns:
         List of Session objects converted to dictionaries with Enums converted to values
     """
+    if _session_manager is None:
+        return []
     # Convert Session dataclasses to dictionaries for JSON serialization
-    sessions_dicts = [asdict(session) for session in _sessions]
+    sessions_dicts = [asdict(session) for session in _session_manager.get_sessions()]
     # Convert Enums to their values for JSON serialization
     return [_convert_enums_to_values(session_dict) for session_dict in sessions_dicts]
 
@@ -243,18 +246,6 @@ def _handle_add_model_command(payload: Union[Dict[str, Any], bytes]) -> Optional
         return {"status": "error", "message": str(e)}
 
 
-def _save_sessions_state() -> None:
-    """Save sessions list to persistent state."""
-    if _config is None:
-        logger.warning("Cannot save sessions state: config not initialized")
-        return
-    try:
-        save_state(_config, _sessions, StateIdentifiers.SESSIONS)
-        logger.debug("Saved sessions state")
-    except Exception as e:
-        logger.warning(f"Failed to save sessions state: {e}")
-
-
 def add_session(session: Session) -> None:
     """
     Add a session to the sessions list and persist state.
@@ -262,10 +253,10 @@ def add_session(session: Session) -> None:
     Args:
         session: Session instance to add
     """
-    global _sessions
-    _sessions.append(session)
-    _save_sessions_state()
-    logger.debug(f"Added session with ID: {session.id}")
+    if _session_manager is None:
+        logger.warning("Cannot add session: session manager not initialized")
+        return
+    _session_manager.add_session(session)
 
 
 def remove_session(session_id: str) -> bool:
@@ -278,17 +269,10 @@ def remove_session(session_id: str) -> bool:
     Returns:
         True if session was found and removed, False otherwise
     """
-    global _sessions
-    initial_count = len(_sessions)
-    _sessions = [s for s in _sessions if s.id != session_id]
-    
-    if len(_sessions) < initial_count:
-        _save_sessions_state()
-        logger.debug(f"Removed session with ID: {session_id}")
-        return True
-    else:
-        logger.warning(f"Session with ID {session_id} not found")
+    if _session_manager is None:
+        logger.warning("Cannot remove session: session manager not initialized")
         return False
+    return _session_manager.remove_session(session_id)
 
 
 def _sanitize_filename(name: str) -> str:
@@ -493,21 +477,15 @@ def main() -> None:
     global _config
     _config = config
     
-    # Step 1.5: Load Sessions and Models from persistent state
-    logger.info("Loading Sessions from state...")
+    # Step 1.5: Initialize SessionStateManager (loads sessions automatically)
+    logger.info("Initializing Session state manager...")
     try:
-        global _sessions
-        loaded_sessions = read_state(config, StateIdentifiers.SESSIONS, default=None)
-        
-        if isinstance(loaded_sessions, list):
-            _sessions = loaded_sessions
-            logger.info(f"Loaded {len(_sessions)} sessions from state")
-        else:
-            _sessions = []
-            logger.info("No sessions found in state, initializing empty list")
+        global _session_manager
+        _session_manager = SessionStateManager(config)
+        logger.info("Session state manager initialized successfully")
     except Exception as e:
-        logger.warning(f"Error loading Sessions from state: {e}")
-        _sessions = []
+        logger.error(f"Error initializing Session state manager: {e}")
+        sys.exit(1)
     
     logger.info("Loading Models from state...")
     try:

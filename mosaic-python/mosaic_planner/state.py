@@ -42,7 +42,9 @@ class SessionStatus(Enum):
     """Session status enumeration."""
 
     IDLE = "idle"
-    RUNNING = "running"
+    TRAINING = "training"
+    INFERRING = "inferring"
+    ERROR_CORRECTION = "error_correction"
     ERROR = "error"
     COMPLETE = "complete"
 
@@ -248,8 +250,7 @@ class Session:
         self.time_started = time_started if time_started is not None else int(time.time() * 1000)
         self.time_ended = time_ended
         self.status = status
-        if id is not None:
-            self.id = id
+        self.id = id if id is not None else str(uuid.uuid4())
 
 
 @dataclass

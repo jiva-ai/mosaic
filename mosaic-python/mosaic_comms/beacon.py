@@ -1692,7 +1692,7 @@ class Beacon:
                 # Check if session with this plan.id already exists to avoid duplicates
                 existing_session = next((s for s in _sessions if s.plan.id == plan.id), None)
                 if existing_session is None:
-                    session = Session(plan=plan, data=data, status=SessionStatus.RUNNING)
+                    session = Session(plan=plan, data=data, status=SessionStatus.TRAINING)
                     add_session(session)
                     logger.info(f"Created session {session.id} for plan {plan.id}")
                 else:
@@ -1862,7 +1862,7 @@ class Beacon:
                 # Check if session with this plan.id already exists to avoid duplicates
                 existing_session = next((s for s in _sessions if s.plan.id == plan.id), None)
                 if existing_session is None:
-                    session = Session(plan=plan, data=data, status=SessionStatus.RUNNING)
+                    session = Session(plan=plan, data=data, status=SessionStatus.TRAINING)
                     add_session(session)
                     logger.info(f"Created session {session.id} for plan {plan.id} (chunked)")
                 else:

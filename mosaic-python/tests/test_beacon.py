@@ -2901,7 +2901,7 @@ class TestBeaconCollectStats:
             )
             
             # Create a session
-            session = Session(plan=plan, status=SessionStatus.RUNNING)
+            session = Session(plan=plan, status=SessionStatus.TRAINING)
             
             # Mock send_command on sender to capture the payload and call receiver handler
             received_payload = None
@@ -3015,7 +3015,7 @@ class TestBeaconCollectStats:
             )
             
             # Create a session
-            session = Session(plan=plan, status=SessionStatus.RUNNING)
+            session = Session(plan=plan, status=SessionStatus.TRAINING)
             
             # Execute model plan should raise ValueError
             with pytest.raises(ValueError) as exc_info:
@@ -3060,7 +3060,7 @@ class TestBeaconCollectStats:
             )
             
             # Create a session with None plan
-            session = Session(plan=None, status=SessionStatus.RUNNING)
+            session = Session(plan=None, status=SessionStatus.TRAINING)
             
             # Execute model plan should raise ValueError
             with pytest.raises(ValueError) as exc_info:
