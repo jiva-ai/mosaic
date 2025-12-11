@@ -239,6 +239,8 @@ SEE ALSO
 
 SYNOPSIS
     infer [input]
+    help infer <model_name>
+    help infer <model_id>
 
 DESCRIPTION
     Runs federated inference on the currently active session. This command
@@ -252,6 +254,16 @@ DESCRIPTION
 
     If no input is provided, displays advice on what input format is expected
     based on the session's model and data types.
+
+    For model-specific inference guidance, use:
+        help infer <model_name>
+        help infer <model_id>
+    
+    This will show detailed information about:
+    - Expected input format for that specific model
+    - Data type requirements
+    - Training status and requirements
+    - Usage examples
 
 OPTIONS
     input
@@ -273,9 +285,21 @@ EXAMPLES
     
     infer /path/to/audio.wav
         Run inference on an audio file
+    
+    help infer my_model
+        Show model-specific inference help for a model named "my_model"
+    
+    help infer abc-123-def-456
+        Show model-specific inference help for a model with ID "abc-123-def-456"
+
+IMPORTANT NOTES
+    - The model must be trained before running inference
+    - Use 'ls models' to see available models and their IDs
+    - Use 'use [session_id]' to set the active session before running inference
+    - Model-specific help shows training status and input requirements
 
 SEE ALSO
-    use, set_infer_method, create_session
+    use, set_infer_method, create_session, train_session, ls models
 """,
     ),
     "ls": (

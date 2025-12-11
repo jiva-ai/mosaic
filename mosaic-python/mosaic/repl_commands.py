@@ -437,13 +437,145 @@ The repository includes:
     output_fn(guide)
 
 
+def _get_model_specific_inference_help(model_name_or_id: str, output_fn: Callable[[str], None]) -> None:
+    """
+    Get model-specific inference help based on model name or ID.
+    
+    Args:
+        model_name_or_id: Model name or ID to look up
+        output_fn: Function to call with output text
+    """
+    from mosaic.mosaic import _models, _session_manager
+    from mosaic_config.state import ModelType, DataType
+    from mosaic.inference_advice import get_inference_advice
+    
+    if _models is None:
+        output_fn("Error: Models not initialized\n")
+        return
+    
+    # Find model by name or ID
+    model = None
+    for m in _models:
+        if m.name.lower() == model_name_or_id.lower() or m.id == model_name_or_id:
+            model = m
+            break
+    
+    if model is None:
+        output_fn(f"Error: Model '{model_name_or_id}' not found.\n")
+        output_fn("Use 'ls models' to see available models.\n")
+        return
+    
+    # Get model type
+    model_type = model.model_type
+    
+    # Try to infer data type from sessions using this model
+    data_type = None
+    if _session_manager:
+        sessions = _session_manager.get_sessions()
+        for session in sessions:
+            if session.model_id == model.id and session.data and session.data.file_definitions:
+                data_type = session.data.file_definitions[0].data_type
+                break
+    
+    # If no data type from sessions, infer from model type
+    if data_type is None and model_type:
+        # Map model types to likely data types
+        model_to_data_type = {
+            ModelType.CNN: DataType.IMAGE,
+            ModelType.VIT: DataType.IMAGE,
+            ModelType.VAE: DataType.IMAGE,
+            ModelType.DIFFUSION: DataType.IMAGE,
+            ModelType.WAV2VEC: DataType.AUDIO,
+            ModelType.TRANSFORMER: DataType.TEXT,
+            ModelType.BERT: DataType.TEXT,
+            ModelType.RNN: DataType.TEXT,
+            ModelType.LSTM: DataType.TEXT,
+            ModelType.GNN: DataType.GRAPH,
+            ModelType.RL: DataType.RL,
+        }
+        data_type = model_to_data_type.get(model_type)
+    
+    # Generate comprehensive help
+    help_text = f"""INFER - Model-Specific Inference Help
+{'=' * 70}
+
+Model Information:
+  Name: {model.name}
+  ID: {model.id}
+  Type: {model_type.value if model_type else 'Unknown'}
+  Trained: {'Yes' if model.trained else 'No'}
+
+"""
+    
+    # Training requirement warning
+    if not model.trained:
+        help_text += """⚠️  IMPORTANT: This model has not been trained yet!
+   Before running inference, you must:
+   1. Create a session with this model: create_session
+   2. Train the model: train_session [session_id]
+   3. Then you can run inference: infer [input]
+
+"""
+    else:
+        help_text += """✓ Model is trained and ready for inference.
+
+"""
+    
+    # Data type information
+    if data_type:
+        help_text += f"Expected Data Type: {data_type.value.upper()}\n\n"
+    else:
+        help_text += "Expected Data Type: Unknown (check model documentation)\n\n"
+    
+    # Get inference advice
+    advice = get_inference_advice(model_type, data_type)
+    help_text += "Input Format Requirements:\n"
+    help_text += "-" * 70 + "\n"
+    help_text += advice + "\n\n"
+    
+    # Additional guidance
+    help_text += "Usage Steps:\n"
+    help_text += "-" * 70 + "\n"
+    help_text += "1. Ensure you have a session with this model:\n"
+    help_text += "   ls sessions\n"
+    help_text += "\n"
+    help_text += "2. Set the active session for inference:\n"
+    help_text += "   use [session_id]\n"
+    help_text += "\n"
+    help_text += "3. Run inference with your input:\n"
+    help_text += "   infer /path/to/input_file\n"
+    help_text += "   or\n"
+    help_text += "   infer <input_data>\n"
+    help_text += "\n"
+    
+    # Model-specific examples
+    if model_type == ModelType.CNN and data_type == DataType.IMAGE:
+        help_text += "Example:\n"
+        help_text += "  infer /path/to/image.jpg\n"
+        help_text += "  infer /path/to/image.png\n"
+    elif model_type == ModelType.WAV2VEC and data_type == DataType.AUDIO:
+        help_text += "Example:\n"
+        help_text += "  infer /path/to/audio.wav\n"
+        help_text += "  infer /path/to/audio.flac\n"
+    elif model_type in (ModelType.TRANSFORMER, ModelType.BERT) and data_type == DataType.TEXT:
+        help_text += "Example:\n"
+        help_text += "  infer /path/to/text.txt\n"
+        help_text += "  infer 'Your text here'\n"
+    
+    help_text += "\n" + "=" * 70 + "\n"
+    help_text += "For general inference help, type: help infer\n"
+    help_text += "To see all models, type: ls models\n"
+    
+    output_fn(help_text)
+
+
 def execute_help(output_fn: Callable[[str], None], command: Optional[str] = None) -> None:
     """
     Execute help command - show help message or detailed command help.
     
     Args:
         output_fn: Function to call with output text
-        command: Optional command name for detailed help
+        command: Optional command name for detailed help, or "infer <model_name>" for model-specific help
     """
     from mosaic.help_text import get_command_help, get_command_list_sorted, COMMAND_ALIASES
     
@@ -465,6 +597,14 @@ def execute_help(output_fn: Callable[[str], None], command: Optional[str] = None
         
         output_fn(help_text.strip() + "\n")
     else:
+        # Check if this is "infer <model_name>" format
+        parts = command.split(None, 1)
+        if len(parts) == 2 and parts[0].lower() == "infer":
+            # Model-specific inference help
+            model_name_or_id = parts[1]
+            _get_model_specific_inference_help(model_name_or_id, output_fn)
+            return
+        
         # Show detailed help for specific command
         try:
             short_desc, long_desc = get_command_help(command)
@@ -538,7 +678,11 @@ def process_command(command: str, output_fn: Callable[[str], None]) -> None:
             method = args[0] if args else None
             execute_set_infer_method(output_fn, method)
         elif cmd == "help":
-            help_command = args[0] if args else None
+            # Handle "help infer <model_name>" format
+            if args and len(args) >= 2 and args[0].lower() == "infer":
+                help_command = f"infer {args[1]}"
+            else:
+                help_command = " ".join(args) if args else None
             execute_help(output_fn, help_command)
         elif cmd == "quickstart":
             execute_quickstart(output_fn)
