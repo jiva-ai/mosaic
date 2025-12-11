@@ -373,6 +373,60 @@ The system will:
   • Aggregate predictions using the configured method
   • Display or save results
 
+PREDEFINED MODELS AND DATASETS
+================================================================================
+
+MOSAIC includes several predefined models. Here's a quick reference:
+
+  ResNet-50/101 (CNN) - Image Classification
+    Models: resnet50, resnet101
+    Datasets: ImageNet, CIFAR-10, CIFAR-100
+    Download: https://www.image-net.org/ (ImageNet)
+              https://www.cs.toronto.edu/~kriz/cifar.html (CIFAR)
+    Data: Organize images in class folders or flat directory
+    Format: .jpg, .jpeg, .png
+
+  Wav2Vec2 - Speech Recognition
+    Model: wav2vec2
+    Datasets: LibriSpeech, Common Voice
+    Download: https://www.openslr.org/12/ (LibriSpeech)
+    Data: Audio files (.wav, .flac) with optional transcriptions
+    Format: 16kHz sample rate
+
+  GPT-Neo - Text Generation
+    Model: gpt-neo
+    Datasets: The Pile, C4, WikiText-103
+    Download: https://pile.eleuther.ai/ (The Pile)
+              https://s3.amazonaws.com/research.metamind.io/wikitext/wikitext-103-v1.zip
+    Data: Text files (.txt) or JSONL format
+    Format: One document per file or JSONL line
+
+  GCN - Graph Node Classification
+    Model: gcn-ogbn-arxiv
+    Dataset: OGB ArXiv
+    Download: pip install ogb
+              from ogb.nodeproppred import PygNodePropPredDataset
+              dataset = PygNodePropPredDataset(name='ogbn-arxiv', root='data/')
+    Data: Graph JSON files with nodes, edges, features
+    Format: .json, .graphml, .pkl
+
+  BigGAN - Image Generation
+    Model: biggan
+    Datasets: ImageNet, CelebA
+    Download: https://www.image-net.org/ (ImageNet)
+    Data: Images organized by class folders
+    Format: .jpg, .jpeg, .png
+
+  PPO - Reinforcement Learning
+    Model: ppo
+    Datasets: OpenAI Gym environments
+    Download: pip install gym
+    Data: Trajectory JSON files or generated on-the-fly
+    Format: .json with observations, actions, rewards
+
+For detailed download instructions and data organization, see:
+  help train_session
+
 USEFUL COMMANDS
 ================================================================================
 
@@ -391,6 +445,7 @@ Inference Configuration:
 Help:
   help              - List all commands
   help <command>    - Detailed help for a specific command
+  help infer <model> - Model-specific inference help
   quickstart        - Show this guide again
 
 EXAMPLES

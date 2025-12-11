@@ -400,12 +400,207 @@ WORKFLOW OVERVIEW
        Uses the trained model to make predictions, aggregates results from all
        participating nodes using various aggregation methods.
 
+PREDEFINED MODELS AND DATASETS
+    MOSAIC includes several predefined models. Below is information about each
+    model, recommended datasets, where to download them, and how to organize
+    them in your data directory:
+
+    ResNet-50 / ResNet-101 (CNN - Image Classification):
+    ----------------------------------------------------
+    Model: resnet50, resnet101
+    Data Type: IMAGE
+    Recommended Datasets:
+      - ImageNet: https://www.image-net.org/download.php
+        Large-scale image classification (1000 classes, ~1.2M images)
+      - CIFAR-10: https://www.cs.toronto.edu/~kriz/cifar.html
+        Smaller dataset (10 classes, 60K images) - good for testing
+      - CIFAR-100: https://www.cs.toronto.edu/~kriz/cifar.html
+        Extended version (100 classes, 60K images)
+    
+    Data Organization:
+        data/
+        └── imagenet/
+            ├── train/
+            │   ├── n01440764/
+            │   │   ├── n01440764_18.JPEG
+            │   │   └── ...
+            │   └── n01443537/
+            │       └── ...
+            └── val/
+                └── ...
+    
+    For CIFAR-10/100, extract to:
+        data/
+        └── cifar10/
+            ├── data_batch_1
+            ├── data_batch_2
+            └── ...
+    
+    Supported formats: .jpg, .jpeg, .png
+    Input shape: [batch, 3, 224, 224] (automatically resized)
+
+    Wav2Vec2 (Speech Recognition):
+    -------------------------------
+    Model: wav2vec2
+    Data Type: AUDIO
+    Recommended Datasets:
+      - LibriSpeech: https://www.openslr.org/12/
+        Large-scale speech recognition corpus (1000+ hours)
+      - Common Voice: https://commonvoice.mozilla.org/
+        Multilingual speech dataset (open source)
+      - TIMIT: https://catalog.ldc.upenn.edu/LDC93S1
+        Phoneme recognition dataset
+    
+    Data Organization:
+        data/
+        └── librispeech/
+            ├── train-clean-100/
+            │   ├── speaker_id/
+            │   │   ├── chapter_id/
+            │   │   │   ├── audio1.wav
+            │   │   │   └── audio1.txt  (transcription)
+            │   │   │   └── ...
+            │   │   └── ...
+            │   └── ...
+            └── dev-clean/
+                └── ...
+    
+    Supported formats: .wav, .flac
+    Input: Audio waveform at 16kHz sample rate
+    Transcripts: Optional .txt files with same name as audio files
+
+    GPT-Neo (Text Generation):
+    ---------------------------
+    Model: gpt-neo
+    Data Type: TEXT
+    Recommended Datasets:
+      - The Pile: https://pile.eleuther.ai/
+        Large diverse text corpus for language modeling
+      - C4 (Colossal Clean Crawled Corpus): https://github.com/allenai/allennlp
+        Cleaned web text corpus
+      - OpenWebText: https://github.com/jcpeterson/openwebtext
+        Open-source recreation of WebText dataset
+    
+    Data Organization:
+        data/
+        └── text_corpus/
+            ├── document1.txt
+            ├── document2.txt
+            └── ...
+    
+    Or JSONL format:
+        data/
+        └── text_corpus.jsonl
+            {"text": "First document text..."}
+            {"text": "Second document text..."}
+    
+    Supported formats: .txt, .jsonl
+    Each file or JSONL line contains text samples
+
+    GCN (Graph Node Classification - ogbn-arxiv):
+    ----------------------------------------------
+    Model: gcn-ogbn-arxiv
+    Data Type: GRAPH
+    Recommended Dataset:
+      - OGB ArXiv: https://ogb.stanford.edu/docs/nodeprop/#ogbn-arxiv
+        Academic paper citation network (169K nodes, 1.1M edges)
+        Download: pip install ogb
+        Then: from ogb.nodeproppred import PygNodePropPredDataset
+              dataset = PygNodePropPredDataset(name='ogbn-arxiv')
+    
+    Data Organization:
+        data/
+        └── ogbn_arxiv/
+            ├── graph.json
+            └── metadata.json
+    
+    Graph JSON format:
+        {
+          "nodes": [{"id": 0, "features": [...]}, ...],
+          "edges": [[source, target], ...],
+          "labels": [0, 1, ...]
+        }
+    
+    Supported formats: .json, .graphml, .pkl
+
+    BigGAN (Image Generation):
+    ---------------------------
+    Model: biggan
+    Data Type: IMAGE
+    Recommended Datasets:
+      - ImageNet: https://www.image-net.org/download.php
+        Same as ResNet - used for training generative models
+      - CelebA: http://mmlab.ie.cuhk.edu.hk/projects/CelebA.html
+        Face images dataset (200K+ celebrity images)
+    
+    Data Organization:
+        data/
+        └── imagenet/
+            └── train/
+                ├── class1/
+                │   ├── img1.jpg
+                │   └── ...
+                └── class2/
+                    └── ...
+    
+    Supported formats: .jpg, .jpeg, .png
+    Input shape: [batch, 3, 128, 128] for generation
+    Class labels: Required for conditional generation
+
+    PPO (Reinforcement Learning):
+    ------------------------------
+    Model: ppo
+    Data Type: RL
+    Recommended Datasets:
+      - OpenAI Gym environments: https://gym.openai.com/
+        Standard RL environments (CartPole, Atari, etc.)
+      - Custom trajectory data: Recorded episodes from RL environments
+    
+    Data Organization:
+        data/
+        └── rl_trajectories/
+            ├── trajectory_001.json
+            ├── trajectory_002.json
+            └── ...
+    
+    Trajectory JSON format:
+        {
+          "observations": [[obs1], [obs2], ...],
+          "actions": [action1, action2, ...],
+          "rewards": [reward1, reward2, ...],
+          "dones": [False, False, ..., True]
+        }
+    
+    Supported formats: .json
+    Each file contains one or more episodes
+
+DOWNLOADING AND SETUP
+    For most datasets:
+    1. Download the dataset from the provided links
+    2. Extract/unpack to your data directory (as configured in config)
+    3. Organize according to the structure shown above
+    4. Ensure file formats match supported extensions
+    5. For classification tasks, organize by class folders if possible
+    
+    Quick setup examples:
+      # ImageNet (example)
+      mkdir -p data/imagenet
+      # Download and extract ImageNet to data/imagenet/
+      
+      # LibriSpeech (example)
+      mkdir -p data/librispeech
+      # Download LibriSpeech and extract to data/librispeech/
+      
+      # Text corpus (example)
+      mkdir -p data/text_corpus
+      # Download text files and place in data/text_corpus/
+
 EXAMPLES
     quickstart
         Display the complete getting started guide
 
 SEE ALSO
-    create_session, train_session, infer, help
+    create_session, train_session, infer, help, ls data
     https://github.com/jiva-ai/mosaic
 """,
     ),
@@ -724,6 +919,266 @@ GENERAL GUIDELINES
       * Inferred from filenames
       * Specified during session creation
 
+PREDEFINED MODELS AND DATASET DOWNLOADS
+    MOSAIC includes several predefined models. Below is information about each
+    model, recommended datasets, where to download them, and how to organize
+    them in your data directory:
+
+    ResNet-50 / ResNet-101 (CNN - Image Classification):
+    ----------------------------------------------------
+    Model: resnet50, resnet101
+    Data Type: IMAGE
+    Recommended Datasets:
+      - ImageNet: https://www.image-net.org/download.php
+        Large-scale image classification (1000 classes, ~1.2M images)
+        Requires registration and agreement to terms
+      - CIFAR-10: https://www.cs.toronto.edu/~kriz/cifar.html
+        Smaller dataset (10 classes, 60K images) - good for testing
+        Direct download: https://www.cs.toronto.edu/~kriz/cifar-10-python.tar.gz
+      - CIFAR-100: https://www.cs.toronto.edu/~kriz/cifar.html
+        Extended version (100 classes, 60K images)
+        Direct download: https://www.cs.toronto.edu/~kriz/cifar-100-python.tar.gz
+    
+    Data Organization for ImageNet:
+        data/
+        └── imagenet/
+            ├── train/
+            │   ├── n01440764/  (class folder)
+            │   │   ├── n01440764_18.JPEG
+            │   │   └── ...
+            │   └── n01443537/
+            │       └── ...
+            └── val/
+                └── ...
+    
+    Data Organization for CIFAR-10/100:
+        data/
+        └── cifar10/
+            ├── data_batch_1
+            ├── data_batch_2
+            └── ...
+        # Or extract images to:
+        data/
+        └── cifar10/
+            ├── airplane/
+            │   ├── img1.png
+            │   └── ...
+            └── automobile/
+                └── ...
+    
+    Supported formats: .jpg, .jpeg, .png
+    Input shape: [batch, 3, 224, 224] (automatically resized)
+
+    Wav2Vec2 (Speech Recognition):
+    -------------------------------
+    Model: wav2vec2
+    Data Type: AUDIO
+    Recommended Datasets:
+      - LibriSpeech: https://www.openslr.org/12/
+        Large-scale speech recognition corpus (1000+ hours)
+        Direct download links:
+          * train-clean-100: http://www.openslr.org/resources/12/train-clean-100.tar.gz
+          * train-clean-360: http://www.openslr.org/resources/12/train-clean-360.tar.gz
+          * dev-clean: http://www.openslr.org/resources/12/dev-clean.tar.gz
+          * test-clean: http://www.openslr.org/resources/12/test-clean.tar.gz
+      - Common Voice: https://commonvoice.mozilla.org/
+        Multilingual speech dataset (open source, requires registration)
+      - TIMIT: https://catalog.ldc.upenn.edu/LDC93S1
+        Phoneme recognition dataset (requires LDC membership)
+    
+    Data Organization for LibriSpeech:
+        data/
+        └── librispeech/
+            ├── train-clean-100/
+            │   ├── 19/
+            │   │   ├── 198/
+            │   │   │   ├── 19-198-0001.flac
+            │   │   │   ├── 19-198-0001.txt  (transcription)
+            │   │   │   ├── 19-198-0002.flac
+            │   │   │   └── ...
+            │   │   └── ...
+            │   └── ...
+            └── dev-clean/
+                └── ...
+    
+    Supported formats: .wav, .flac
+    Input: Audio waveform at 16kHz sample rate
+    Transcripts: Optional .txt files with same name as audio files
+
+    GPT-Neo (Text Generation):
+    ---------------------------
+    Model: gpt-neo
+    Data Type: TEXT
+    Recommended Datasets:
+      - The Pile: https://pile.eleuther.ai/
+        Large diverse text corpus for language modeling
+        Download: Requires access request
+      - C4 (Colossal Clean Crawled Corpus): 
+        https://github.com/allenai/allennlp
+        Cleaned web text corpus
+        Available via TensorFlow Datasets: tfds.load('c4')
+      - OpenWebText: https://github.com/jcpeterson/openwebtext
+        Open-source recreation of WebText dataset
+        Download: Follow instructions in repository
+      - WikiText-103: https://blog.salesforceairesearch.com/the-wikitext-long-term-dependency-language-modeling-dataset/
+        Wikipedia text dataset
+        Direct download: https://s3.amazonaws.com/research.metamind.io/wikitext/wikitext-103-v1.zip
+    
+    Data Organization (single directory):
+        data/
+        └── text_corpus/
+            ├── document1.txt
+            ├── document2.txt
+            └── ...
+    
+    Data Organization (JSONL format):
+        data/
+        └── text_corpus.jsonl
+            {"text": "First document text..."}
+            {"text": "Second document text..."}
+    
+    Supported formats: .txt, .jsonl
+    Each file or JSONL line contains text samples
+
+    GCN (Graph Node Classification - ogbn-arxiv):
+    ----------------------------------------------
+    Model: gcn-ogbn-arxiv
+    Data Type: GRAPH
+    Recommended Dataset:
+      - OGB ArXiv: https://ogb.stanford.edu/docs/nodeprop/#ogbn-arxiv
+        Academic paper citation network (169K nodes, 1.1M edges)
+        
+        Download via Python:
+          pip install ogb
+          from ogb.nodeproppred import PygNodePropPredDataset
+          dataset = PygNodePropPredDataset(name='ogbn-arxiv', root='data/')
+          # Dataset will be downloaded to data/ogbg_nodeproppred/ogbn-arxiv/
+    
+    Data Organization:
+        data/
+        └── ogbn_arxiv/
+            ├── graph.json
+            └── metadata.json
+    
+    Graph JSON format:
+        {
+          "nodes": [{"id": 0, "features": [...]}, ...],
+          "edges": [[source, target], ...],
+          "labels": [0, 1, ...]
+        }
+    
+    Supported formats: .json, .graphml, .pkl
+    The OGB library handles download and preprocessing automatically
+
+    BigGAN (Image Generation):
+    ---------------------------
+    Model: biggan
+    Data Type: IMAGE
+    Recommended Datasets:
+      - ImageNet: https://www.image-net.org/download.php
+        Same as ResNet - used for training generative models
+        See ResNet-50 section above for download and organization
+      - CelebA: http://mmlab.ie.cuhk.edu.hk/projects/CelebA.html
+        Face images dataset (200K+ celebrity images)
+        Direct download: http://mmlab.ie.cuhk.edu.hk/projects/CelebA.html
+        (Requires Google Drive access)
+    
+    Data Organization for ImageNet:
+        data/
+        └── imagenet/
+            └── train/
+                ├── n01440764/  (class folder)
+                │   ├── img1.jpg
+                │   └── ...
+                └── n01443537/
+                    └── ...
+    
+    Data Organization for CelebA:
+        data/
+        └── celeba/
+            ├── img_align_celeba/
+            │   ├── 000001.jpg
+            │   ├── 000002.jpg
+            │   └── ...
+            └── list_attr_celeba.txt  (optional attributes)
+    
+    Supported formats: .jpg, .jpeg, .png
+    Input shape: [batch, 3, 128, 128] for generation
+    Class labels: Required for conditional generation (from ImageNet classes)
+
+    PPO (Reinforcement Learning):
+    ------------------------------
+    Model: ppo
+    Data Type: RL
+    Recommended Datasets/Environments:
+      - OpenAI Gym: https://gym.openai.com/
+        Standard RL environments (CartPole, Atari, etc.)
+        Install: pip install gym
+        Environments generate data on-the-fly during training
+      - Custom trajectory data: Recorded episodes from RL environments
+    
+    Data Organization (for pre-recorded trajectories):
+        data/
+        └── rl_trajectories/
+            ├── trajectory_001.json
+            ├── trajectory_002.json
+            └── ...
+    
+    Trajectory JSON format:
+        {
+          "observations": [[obs1], [obs2], ...],
+          "actions": [action1, action2, ...],
+          "rewards": [reward1, reward2, ...],
+          "dones": [False, False, ..., True]
+        }
+    
+    Supported formats: .json
+    Each file contains one or more episodes
+    Note: For most RL training, data is generated during training from
+          the environment, so pre-recorded data is optional
+
+DOWNLOADING AND SETUP INSTRUCTIONS
+    General Steps:
+    1. Identify your model type and required data type
+    2. Download the recommended dataset from the links above
+    3. Extract/unpack the dataset
+    4. Organize files according to the structure shown above
+    5. Place in your configured data directory (see config.data_location)
+    6. Verify file formats match supported extensions
+    7. For classification tasks, organize by class folders when possible
+    
+    Quick Setup Examples:
+    
+      # ImageNet (requires registration)
+      mkdir -p data/imagenet
+      # Download ImageNet from https://www.image-net.org/
+      # Extract and organize into train/val folders with class subfolders
+      
+      # CIFAR-10 (quick test)
+      mkdir -p data/cifar10
+      wget https://www.cs.toronto.edu/~kriz/cifar-10-python.tar.gz
+      tar -xzf cifar-10-python.tar.gz -C data/cifar10
+      
+      # LibriSpeech
+      mkdir -p data/librispeech
+      wget http://www.openslr.org/resources/12/train-clean-100.tar.gz
+      tar -xzf train-clean-100.tar.gz -C data/librispeech
+      
+      # WikiText-103 (text)
+      mkdir -p data/wikitext
+      wget https://s3.amazonaws.com/research.metamind.io/wikitext/wikitext-103-v1.zip
+      unzip wikitext-103-v1.zip -d data/wikitext
+      
+      # OGB ArXiv (graph - automatic download)
+      pip install ogb
+      python -c "from ogb.nodeproppred import PygNodePropPredDataset; \
+                 dataset = PygNodePropPredDataset(name='ogbn-arxiv', root='data/')"
+    
+    Verification:
+      Use 'ls data' to verify your data is organized correctly
+      Check that file extensions match supported formats
+      Ensure directory structure matches the examples above
+
 EXAMPLES
     train_session
         Train a session (will prompt for session ID)
@@ -732,7 +1187,7 @@ EXAMPLES
         Train session_123
 
 SEE ALSO
-    create_session, cancel_training, ls data
+    create_session, cancel_training, ls data, help infer <model_name>
 """,
     ),
     "use": (
