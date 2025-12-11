@@ -96,30 +96,48 @@ def execute_calcd(output_fn: Callable[[str], None], method: Optional[str] = None
         output_fn(f"Error: {e}\n")
 
 
-def execute_help(output_fn: Callable[[str], None]) -> None:
+def execute_help(output_fn: Callable[[str], None], command: Optional[str] = None) -> None:
     """
-    Execute help command - show help message.
+    Execute help command - show help message or detailed command help.
     
     Args:
         output_fn: Function to call with output text
+        command: Optional command name for detailed help
     """
-    help_text = """
-Available commands:
-  shb                    - Show send heartbeat statuses
-  rhb                    - Show receive heartbeat statuses
-  hb                     - Show both send and receive heartbeat statuses
-  calcd [method]         - Calculate distribution (method: weighted_shard or weighted_batches)
-  create_session         - Create a new session (interactive Q&A)
-  delete_session [id]    - Delete a session (prompts if id not provided)
-  train_session [id]     - Train a model using a session (prompts if id not provided)
-  cancel_training [id] [hostname] - Cancel training for a session (prompts if id not provided, optional hostname for single node)
-  use [session_id]       - Set active session for inference (prompts if id not provided)
-  infer [input]          - Run federated inference on current session (shows advice if input not provided)
-  set_infer_method [method] - Set inference aggregation method (fedavg, fedprox, majority_vote, etc.)
-  help                   - Show this help message
-  exit/quit/q            - Exit the REPL
-"""
-    output_fn(help_text.strip() + "\n")
+    from mosaic.help_text import get_command_help, get_command_list_sorted, COMMAND_ALIASES
+    
+    if command is None:
+        # Show list of all commands
+        help_text = "Available commands:\n"
+        commands = get_command_list_sorted()
+        
+        for cmd, short_desc in commands:
+            # Format command name with appropriate spacing
+            # Find aliases that map to this command
+            aliases = [alias for alias, main in COMMAND_ALIASES.items() if main == cmd]
+            if aliases:
+                cmd_display = f"{cmd} ({', '.join(sorted(aliases))})"
+            else:
+                cmd_display = cmd
+            
+            help_text += f"  {cmd_display:<30} - {short_desc}\n"
+        
+        output_fn(help_text.strip() + "\n")
+    else:
+        # Show detailed help for specific command
+        try:
+            short_desc, long_desc = get_command_help(command)
+            output_fn(long_desc + "\n")
+        except KeyError:
+            # Check if it's an alias
+            if command.lower() in COMMAND_ALIASES:
+                try:
+                    short_desc, long_desc = get_command_help(COMMAND_ALIASES[command.lower()])
+                    output_fn(long_desc + "\n")
+                except KeyError:
+                    output_fn(f"Unknown command: {command}\nType 'help' for available commands.\n")
+            else:
+                output_fn(f"Unknown command: {command}\nType 'help' for available commands.\n")
 
 
 def process_command(command: str, output_fn: Callable[[str], None]) -> None:
@@ -176,7 +194,8 @@ def process_command(command: str, output_fn: Callable[[str], None]) -> None:
             method = args[0] if args else None
             execute_set_infer_method(output_fn, method)
         elif cmd == "help":
-            execute_help(output_fn)
+            help_command = args[0] if args else None
+            execute_help(output_fn, help_command)
         else:
             output_fn("Unknown command. Type 'help' for available commands.\n")
     except Exception as e:
