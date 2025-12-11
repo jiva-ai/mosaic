@@ -96,6 +96,197 @@ def execute_calcd(output_fn: Callable[[str], None], method: Optional[str] = None
         output_fn(f"Error: {e}\n")
 
 
+def execute_ls(output_fn: Callable[[str], None], parameter: Optional[str] = None) -> None:
+    """
+    Execute ls command - list sessions, models, or data.
+    
+    Args:
+        output_fn: Function to call with output text
+        parameter: What to list - "sessions", "models", or "data"
+    """
+    from mosaic.mosaic import _session_manager, _models, _config
+    from pathlib import Path
+    from datetime import datetime
+    from mosaic_config.state import SessionStatus
+    
+    if parameter is None:
+        output_fn("Usage: ls <parameter>\n")
+        output_fn("Parameters: sessions, models, data\n")
+        return
+    
+    param = parameter.lower()
+    
+    if param == "sessions":
+        if _session_manager is None:
+            output_fn("Error: Session manager not initialized\n")
+            return
+        
+        sessions = _session_manager.get_sessions()
+        
+        if not sessions:
+            output_fn("No sessions found.\n")
+            return
+        
+        # Format sessions table
+        header = f"{'ID':<38} {'Status':<15} {'Model ID':<38} {'Started':<20} {'Parent ID':<38}"
+        separator = "-" * len(header)
+        lines = [header, separator]
+        
+        for session in sessions:
+            session_id = session.id[:36] + "..." if len(session.id) > 36 else session.id
+            status = session.status.value if isinstance(session.status, SessionStatus) else str(session.status)
+            model_id = (session.model_id[:36] + "..." if session.model_id and len(session.model_id) > 36 else session.model_id) or "N/A"
+            
+            # Format timestamp
+            try:
+                started_time = datetime.fromtimestamp(session.time_started / 1000.0)
+                started_str = started_time.strftime("%Y-%m-%d %H:%M:%S")
+            except (ValueError, OSError):
+                started_str = "N/A"
+            
+            parent_id = (session.parent_id[:36] + "..." if session.parent_id and len(session.parent_id) > 36 else session.parent_id) or "N/A"
+            
+            row = f"{session_id:<38} {status:<15} {model_id:<38} {started_str:<20} {parent_id:<38}"
+            lines.append(row)
+        
+        output_fn("\n".join(lines) + "\n")
+    
+    elif param == "models":
+        if _models is None:
+            output_fn("Error: Models not initialized\n")
+            return
+        
+        if not _models:
+            output_fn("No models found in memory.\n")
+            # Also check disk
+            if _config and _config.models_location:
+                models_path = Path(_config.models_location)
+                if models_path.exists():
+                    model_files = list(models_path.rglob("*.onnx"))
+                    if model_files:
+                        output_fn(f"\nFound {len(model_files)} model file(s) on disk:\n")
+                        header = f"{'File Path':<60} {'Size':<15}"
+                        separator = "-" * len(header)
+                        lines = [header, separator]
+                        for model_file in sorted(model_files):
+                            try:
+                                size = model_file.stat().st_size
+                                size_str = f"{size / 1024 / 1024:.2f} MB" if size > 1024 * 1024 else f"{size / 1024:.2f} KB"
+                            except OSError:
+                                size_str = "N/A"
+                            rel_path = str(model_file.relative_to(models_path))
+                            rel_path = (rel_path[:57] + "...") if len(rel_path) > 57 else rel_path
+                            lines.append(f"{rel_path:<60} {size_str:<15}")
+                        output_fn("\n".join(lines) + "\n")
+            return
+        
+        # Format models table
+        header = f"{'ID':<38} {'Name':<30} {'Type':<15} {'File':<40} {'Location':<30}"
+        separator = "-" * len(header)
+        lines = [header, separator]
+        
+        for model in _models:
+            model_id = model.id[:36] + "..." if len(model.id) > 36 else model.id
+            name = (model.name[:28] + "...") if len(model.name) > 28 else model.name
+            model_type = model.model_type.value if model.model_type else "N/A"
+            file_name = (model.file_name[:38] + "...") if model.file_name and len(model.file_name) > 38 else (model.file_name or "N/A")
+            onnx_location = (model.onnx_location[:28] + "...") if model.onnx_location and len(model.onnx_location) > 28 else (model.onnx_location or "root")
+            
+            row = f"{model_id:<38} {name:<30} {model_type:<15} {file_name:<40} {onnx_location:<30}"
+            lines.append(row)
+        
+        output_fn("\n".join(lines) + "\n")
+        
+        # Also show disk files if config available
+        if _config and _config.models_location:
+            models_path = Path(_config.models_location)
+            if models_path.exists():
+                model_files = list(models_path.rglob("*.onnx"))
+                if model_files:
+                    output_fn(f"\nAdditional model files on disk ({len(model_files)} total):\n")
+                    # Show first 10 files
+                    for model_file in sorted(model_files)[:10]:
+                        rel_path = str(model_file.relative_to(models_path))
+                        try:
+                            size = model_file.stat().st_size
+                            size_str = f"{size / 1024 / 1024:.2f} MB" if size > 1024 * 1024 else f"{size / 1024:.2f} KB"
+                        except OSError:
+                            size_str = "N/A"
+                        output_fn(f"  {rel_path:<60} {size_str}\n")
+                    if len(model_files) > 10:
+                        output_fn(f"  ... and {len(model_files) - 10} more\n")
+    
+    elif param == "data":
+        if _config is None or not _config.data_location:
+            output_fn("Error: Data location not configured\n")
+            return
+        
+        data_path = Path(_config.data_location)
+        
+        if not data_path.exists():
+            output_fn(f"Data directory does not exist: {data_path}\n")
+            return
+        
+        # List data files and directories
+        data_items = []
+        
+        # Get all files and directories
+        try:
+            for item in sorted(data_path.iterdir()):
+                if item.is_dir():
+                    # Count files in directory
+                    file_count = len(list(item.rglob("*"))) - len(list(item.rglob("*/")))
+                    data_items.append({
+                        "name": item.name,
+                        "type": "directory",
+                        "size": f"{file_count} files",
+                        "path": str(item.relative_to(data_path))
+                    })
+                elif item.is_file():
+                    try:
+                        size = item.stat().st_size
+                        size_str = f"{size / 1024 / 1024:.2f} MB" if size > 1024 * 1024 else f"{size / 1024:.2f} KB"
+                    except OSError:
+                        size_str = "N/A"
+                    data_items.append({
+                        "name": item.name,
+                        "type": "file",
+                        "size": size_str,
+                        "path": str(item.relative_to(data_path))
+                    })
+        except PermissionError:
+            output_fn(f"Error: Permission denied accessing {data_path}\n")
+            return
+        
+        if not data_items:
+            output_fn("No data files or directories found.\n")
+            return
+        
+        # Format data table
+        header = f"{'Name':<40} {'Type':<12} {'Size':<15} {'Path':<50}"
+        separator = "-" * len(header)
+        lines = [header, separator]
+        
+        for item in data_items[:50]:  # Limit to 50 items
+            name = (item["name"][:38] + "...") if len(item["name"]) > 38 else item["name"]
+            item_type = item["type"]
+            size = item["size"]
+            path = (item["path"][:48] + "...") if len(item["path"]) > 48 else item["path"]
+            
+            row = f"{name:<40} {item_type:<12} {size:<15} {path:<50}"
+            lines.append(row)
+        
+        output_fn("\n".join(lines) + "\n")
+        
+        if len(data_items) > 50:
+            output_fn(f"... and {len(data_items) - 50} more items\n")
+    
+    else:
+        output_fn(f"Unknown parameter: {parameter}\n")
+        output_fn("Usage: ls <parameter>\n")
+        output_fn("Parameters: sessions, models, data\n")
+
+
 def execute_help(output_fn: Callable[[str], None], command: Optional[str] = None) -> None:
     """
     Execute help command - show help message or detailed command help.
@@ -189,6 +380,9 @@ def process_command(command: str, output_fn: Callable[[str], None]) -> None:
             from mosaic.session_commands import execute_infer
             input_data = " ".join(args) if args else None
             execute_infer(output_fn, input_data)
+        elif cmd == "ls":
+            parameter = args[0] if args else None
+            execute_ls(output_fn, parameter)
         elif cmd == "set_infer_method" or cmd == "set-infer-method":
             from mosaic.session_commands import execute_set_infer_method
             method = args[0] if args else None

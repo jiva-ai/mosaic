@@ -278,6 +278,71 @@ SEE ALSO
     use, set_infer_method, create_session
 """,
     ),
+    "ls": (
+        "List sessions, models, or data files",
+        """LS - List Resources
+
+SYNOPSIS
+    ls <parameter>
+
+DESCRIPTION
+    Lists and displays information about sessions, models, or data files in a
+    formatted table. This command provides a quick overview of available
+    resources in the MOSAIC system.
+
+    The command queries:
+    - State manager for session information
+    - In-memory model registry and on-disk model files
+    - Data directory for available datasets
+
+OPTIONS
+    parameter
+        What to list. Must be one of:
+        - sessions: List all sessions with their status, model IDs, and metadata
+        - models: List all models in memory and on disk
+        - data: List all data files and directories in the data location
+
+EXAMPLES
+    ls sessions
+        Display all sessions in a table format showing ID, status, model ID,
+        start time, and parent session ID (for shard sessions)
+    
+    ls models
+        Display all models in memory, showing ID, name, type, file name, and
+        location. Also shows additional model files found on disk.
+    
+    ls data
+        Display all data files and directories in the configured data location,
+        showing name, type (file/directory), size, and relative path.
+
+OUTPUT FORMAT
+    All outputs are formatted as tables with aligned columns for easy reading.
+    Long values are truncated with "..." to maintain table formatting.
+
+    For sessions:
+    - ID: Session unique identifier
+    - Status: Current session status (idle, running, training, etc.)
+    - Model ID: Associated model identifier
+    - Started: Timestamp when session was created
+    - Parent ID: Parent session ID for shard sessions (N/A for main sessions)
+
+    For models:
+    - ID: Model unique identifier
+    - Name: Model name
+    - Type: Model type (CNN, TRANSFORMER, etc.)
+    - File: Model file name
+    - Location: Subdirectory within models_location (or "root")
+
+    For data:
+    - Name: File or directory name
+    - Type: "file" or "directory"
+    - Size: File size (for files) or file count (for directories)
+    - Path: Relative path from data location root
+
+SEE ALSO
+    create_session, delete_session, use
+""",
+    ),
     "rhb": (
         "Show receive heartbeat statuses",
         """RHB - Show Receive Heartbeat Statuses
