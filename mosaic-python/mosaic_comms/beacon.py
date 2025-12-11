@@ -60,6 +60,9 @@ class Beacon:
         # The manager provides direct access to the dictionaries for efficient operations
         self._send_heartbeat_statuses = self._heartbeat_state_manager._send_heartbeat_statuses
         self._receive_heartbeat_statuses = self._heartbeat_state_manager._receive_heartbeat_statuses
+        
+        # Clean up stale send heartbeat entries that are no longer in the peers list
+        # self._cleanup_stale_send_heartbeat_entries() TODO uncomment and make this an option 
 
         # Command handler registry
         # Handlers can accept Dict (JSON) or bytes (binary/pickled) payloads
@@ -161,6 +164,39 @@ class Beacon:
         """
         self._command_handlers[command] = handler
         logger.debug(f"Registered command handler for '{command}'")
+
+    def _cleanup_stale_send_heartbeat_entries(self) -> None:
+        """
+        Remove stale send heartbeat entries that are no longer in the config's peers list.
+        
+        This prevents old entries from previous configurations from persisting after
+        config changes. Entries are only removed if they're not in the current peers list.
+        """
+        if not self.config.peers:
+            # If no peers configured, remove all send heartbeat entries
+            if self._send_heartbeat_statuses:
+                removed_count = len(self._send_heartbeat_statuses)
+                self._send_heartbeat_statuses.clear()
+                logger.info(f"Removed {removed_count} stale send heartbeat entries (no peers configured)")
+            return
+        
+        # Create set of current peer identifiers
+        current_peers = {(peer.host, peer.heartbeat_port) for peer in self.config.peers}
+        
+        # Find entries to remove
+        keys_to_remove = [
+            key for key in self._send_heartbeat_statuses.keys()
+            if key not in current_peers
+        ]
+        
+        if keys_to_remove:
+            for key in keys_to_remove:
+                status = self._send_heartbeat_statuses.pop(key)
+                logger.info(
+                    f"Removed stale send heartbeat entry: {status.host}:{status.heartbeat_port} "
+                    f"(not in current peers list)"
+                )
+            logger.info(f"Cleaned up {len(keys_to_remove)} stale send heartbeat entries")
 
     def _validate_ssl_certificates(self) -> bool:
         """
