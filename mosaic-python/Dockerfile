@@ -8,7 +8,7 @@ WORKDIR /app
 LABEL org.opencontainers.image.source="https://github.com/jiva-ai/mosaic"
 
 # Install system dependencies required for building Python packages
-# and optional GPU tools (these are optional but included for completeness)
+# Includes dependencies for PyTorch, ONNX, and ONNX Runtime
 RUN apt-get update && apt-get install -y \
     build-essential \
     curl \
@@ -24,7 +24,11 @@ COPY pyproject.toml uv.lock .python-version ./
 COPY README.md ./
 
 # Install dependencies using uv
-# This will create a virtual environment and install all dependencies
+# This will create a virtual environment and install all dependencies including:
+# - PyTorch (>=2.0.0) for training and model operations
+# - ONNX (>=1.15.0) for model format handling
+# - ONNX Runtime (>=1.16.0) for inference execution
+# - torchvision, transformers, torch-geometric for various model types
 RUN uv sync --frozen --no-dev
 
 # Copy the project source code
@@ -39,10 +43,8 @@ COPY mosaic_stats/ ./mosaic_stats/
 ENV PATH="/app/.venv/bin:$PATH"
 
 # Set Python path to include the project root
-ENV PYTHONPATH="/app:$PYTHONPATH"
-
-# Ephemeral port range (49152-65535) for dynamic connections between nodes
-EXPOSE 49152-65535/tcp 49152-65535/udp
+# Fix: Use ${PYTHONPATH:-} to avoid warning about undefined variable
+ENV PYTHONPATH="/app${PYTHONPATH:+:$PYTHONPATH}"
 
 # Default command (can be overridden)
 CMD ["python", "-m", "mosaic.mosaic"]

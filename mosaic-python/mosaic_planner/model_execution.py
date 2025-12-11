@@ -275,7 +275,11 @@ def _train_cnn_model(
     
     batch_size = data.batch_size_hint or hyperparameters.get("batch_size", 32)
     num_workers = data.data_loading_hints.get("num_workers", hyperparameters.get("num_workers", 0)) if data.data_loading_hints else hyperparameters.get("num_workers", 0)
-    pin_memory = data.data_loading_hints.get("pin_memory", hyperparameters.get("pin_memory", False)) if data.data_loading_hints else hyperparameters.get("pin_memory", False)
+    # Only use pin_memory if a GPU is available (avoids warning when no GPU)
+    pin_memory_default = hyperparameters.get("pin_memory", False)
+    pin_memory = data.data_loading_hints.get("pin_memory", pin_memory_default) if data.data_loading_hints else pin_memory_default
+    if pin_memory and not torch.cuda.is_available():
+        pin_memory = False
     
     dataloader = DataLoader(
         dataset,
@@ -1114,15 +1118,164 @@ def train_model_from_session(
     trained_filename = f"trained_{model.file_name}" if model.file_name else "trained_model.onnx"
     trained_path = output_path.parent / trained_filename
     
-    torch.onnx.export(
-        trained_model,
-        dummy_input,
-        str(trained_path),
-        opset_version=14,
-        input_names=_get_input_names(model.model_type),
-        output_names=_get_output_names(model.model_type),
-        dynamic_axes=_get_dynamic_axes(model.model_type),
-    )
+    # Store original device to restore later if needed
+    original_device = next(trained_model.parameters()).device
+    
+    # Check if we're on Windows (ONNX export has thread-safety issues on Windows)
+    import platform
+    is_windows = platform.system() == 'Windows'
+    
+    try:
+        # Move model to CPU for export (ONNX export is more stable on CPU)
+        trained_model_cpu = trained_model.cpu()
+        
+        # Ensure dummy input is on CPU and detached
+        if isinstance(dummy_input, torch.Tensor):
+            dummy_input_cpu = dummy_input.detach().cpu()
+        elif isinstance(dummy_input, tuple):
+            # Handle tuple inputs (e.g., for GNN, VAE)
+            dummy_input_cpu = tuple(
+                x.detach().cpu() if isinstance(x, torch.Tensor) else x
+                for x in dummy_input
+            )
+        else:
+            dummy_input_cpu = dummy_input
+        
+        with torch.no_grad():
+            if is_windows:
+                # Windows-specific: ONNX export is NOT thread-safe on Windows, especially with PyTorch's dynamo compiler
+                # Use a global lock to serialize exports and use torch.jit.trace for thread-safety
+                import threading
+                if not hasattr(train_model_from_session, '_onnx_export_lock'):
+                    train_model_from_session._onnx_export_lock = threading.Lock()
+                
+                with train_model_from_session._onnx_export_lock:
+                    # Use torch.jit.trace first to create a traced model
+                    # This avoids the dynamo compiler which causes crashes in threads on Windows
+                    # For ResNet and similar models, tracing works well
+                    try:
+                        # Trace the model first (more thread-safe than direct export)
+                        # Use strict=False to handle models with some dynamic behavior
+                        traced_model = torch.jit.trace(trained_model_cpu, dummy_input_cpu, strict=False)
+                        traced_model.eval()
+                        
+                        # Export the traced model to ONNX
+                        # Traced models use a simpler export path that avoids dynamo
+                        # Try opset 17 first (better compatibility), fall back to 14 if needed
+                        try:
+                            torch.onnx.export(
+                                traced_model,
+                                dummy_input_cpu,
+                                str(trained_path),
+                                opset_version=17,
+                                input_names=_get_input_names(model.model_type),
+                                output_names=_get_output_names(model.model_type),
+                                dynamic_axes=_get_dynamic_axes(model.model_type),
+                                export_params=True,
+                                do_constant_folding=True,
+                                training=torch.onnx.TrainingMode.EVAL,
+                            )
+                        except Exception as opset17_error:
+                            # Fall back to opset 14 if 17 fails
+                            logger.warning(f"ONNX export with opset 17 failed, trying opset 14: {opset17_error}")
+                            torch.onnx.export(
+                                traced_model,
+                                dummy_input_cpu,
+                                str(trained_path),
+                                opset_version=14,
+                                input_names=_get_input_names(model.model_type),
+                                output_names=_get_output_names(model.model_type),
+                                dynamic_axes=_get_dynamic_axes(model.model_type),
+                                export_params=True,
+                                do_constant_folding=True,
+                                training=torch.onnx.TrainingMode.EVAL,
+                            )
+                    except Exception as trace_error:
+                        # If tracing fails (e.g., for models with control flow), try direct export
+                        # with additional safeguards
+                        logger.warning(f"JIT tracing failed ({trace_error}), trying direct export with safeguards")
+                        try:
+                            # Force CPU and ensure model is fully detached
+                            trained_model_cpu = trained_model_cpu.cpu()
+                            for param in trained_model_cpu.parameters():
+                                param.requires_grad = False
+                            
+                            # Try direct export with minimal dynamo involvement
+                            # Try opset 17 first (better compatibility), fall back to 14 if needed
+                            try:
+                                torch.onnx.export(
+                                    trained_model_cpu,
+                                    dummy_input_cpu,
+                                    str(trained_path),
+                                    opset_version=17,
+                                    input_names=_get_input_names(model.model_type),
+                                    output_names=_get_output_names(model.model_type),
+                                    dynamic_axes=_get_dynamic_axes(model.model_type),
+                                    export_params=True,
+                                    do_constant_folding=True,
+                                    training=torch.onnx.TrainingMode.EVAL,
+                                )
+                            except Exception as opset17_error:
+                                # Fall back to opset 14 if 17 fails
+                                logger.warning(f"ONNX export with opset 17 failed, trying opset 14: {opset17_error}")
+                                torch.onnx.export(
+                                    trained_model_cpu,
+                                    dummy_input_cpu,
+                                    str(trained_path),
+                                    opset_version=14,
+                                    input_names=_get_input_names(model.model_type),
+                                    output_names=_get_output_names(model.model_type),
+                                    dynamic_axes=_get_dynamic_axes(model.model_type),
+                                    export_params=True,
+                                    do_constant_folding=True,
+                                    training=torch.onnx.TrainingMode.EVAL,
+                                )
+                        except Exception as export_error:
+                            logger.error(f"ONNX export failed: {export_error}")
+                            # Re-raise with context
+                            raise RuntimeError(
+                                f"Failed to export model to ONNX format. "
+                                f"This may be due to thread-safety issues on Windows. "
+                                f"Original error: {export_error}"
+                            ) from export_error
+            else:
+                # Non-Windows: Use simpler direct export (no thread-safety concerns)
+                torch.onnx.export(
+                    trained_model_cpu,
+                    dummy_input_cpu,
+                    str(trained_path),
+                    opset_version=14,
+                    input_names=_get_input_names(model.model_type),
+                    output_names=_get_output_names(model.model_type),
+                    dynamic_axes=_get_dynamic_axes(model.model_type),
+                    export_params=True,
+                    do_constant_folding=True,
+                    training=torch.onnx.TrainingMode.EVAL,
+                )
+    finally:
+        # Restore model to original device if it was on a different device
+        if original_device.type != 'cpu':
+            trained_model.to(original_device)
+    
+    # Load and re-save the model to ensure all data is embedded (no external .data files)
+    # This is necessary because torch.onnx.export can create external data files for large models,
+    # which causes issues when loading from binary_rep (bytes) instead of file paths
+    # Also ensures IR version is compatible with ONNX Runtime (max supported is 11)
+    try:
+        onnx_model = onnx.load(str(trained_path))
+        
+        # Ensure IR version is compatible with ONNX Runtime (max supported is 11)
+        if onnx_model.ir_version > 11:
+            onnx_model.ir_version = 11
+        
+        onnx.save(onnx_model, str(trained_path))
+        
+        # Clean up any external data files that might have been created
+        data_file = trained_path.with_suffix(trained_path.suffix + '.data')
+        if data_file.exists():
+            data_file.unlink()
+    except Exception as e:
+        logger.warning(f"Failed to re-save model without external data: {e}. Model may have external data files.")
     
     logger.info(f"Trained model saved to {trained_path}")
     
@@ -1152,9 +1305,42 @@ def _create_dummy_input(model: Model, data: Data) -> Any:
     import torch
     
     if data.file_definitions and data.file_definitions[0].input_shape:
-        shape = data.file_definitions[0].input_shape
+        shape = data.file_definitions[0].input_shape.copy()
         # Replace None with 1 for batch dimension
         shape = [1 if s is None else s for s in shape]
+        
+        # For CNN models, ensure 4D input (batch, channels, height, width)
+        # If shape is 3D (channels, height, width), prepend batch dimension
+        if model.model_type == ModelType.CNN:
+            if len(shape) == 3:
+                # Shape is [C, H, W], need to add batch dimension: [1, C, H, W]
+                shape = [1] + shape
+            elif len(shape) == 2:
+                # Shape is [H, W], need to add batch and channels: [1, 3, H, W]
+                shape = [1, 3] + shape
+            elif len(shape) == 1:
+                # Shape is [W], need to add batch, channels, height: [1, 3, 224, W]
+                shape = [1, 3, 224] + shape
+            # If already 4D, use as-is
+        
+        # For WAV2VEC models, ensure 2D input (batch, sequence_length)
+        elif model.model_type == ModelType.WAV2VEC:
+            if len(shape) == 1:
+                # Shape is [sequence_length], need to add batch: [1, sequence_length]
+                shape = [1] + shape
+        
+        # For TRANSFORMER models, ensure 2D input (batch, sequence_length)
+        elif model.model_type == ModelType.TRANSFORMER:
+            if len(shape) == 1:
+                # Shape is [sequence_length], need to add batch: [1, sequence_length]
+                shape = [1] + shape
+        
+        # For RL models, ensure 2D input (batch, observation_dim)
+        elif model.model_type == ModelType.RL:
+            if len(shape) == 1:
+                # Shape is [observation_dim], need to add batch: [1, observation_dim]
+                shape = [1] + shape
+        
         return torch.randn(*shape)
     
     # Default shapes based on model type

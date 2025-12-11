@@ -3,7 +3,7 @@
 import logging
 import time
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Optional, Tuple
+from typing import Any, Callable, Dict, List, Optional, Tuple, Union
 
 from mosaic_config.config import MosaicConfig, read_config
 from mosaic_config.state import (
@@ -334,6 +334,29 @@ def _create_session_simple(output_fn: Callable[[str], None]) -> Optional[Session
             output_fn("Error: Could not get model.\n")
             return None
         
+        # Check if model has a type, prompt if missing
+        if selected_model.model_type is None:
+            output_fn("\nModel type not set. Please select a model type:\n\n")
+            model_types = list(ModelType)
+            for i, mt in enumerate(model_types):
+                output_fn(f"  {i+1}. {mt.value}\n")
+            
+            while True:
+                try:
+                    type_selection = _input_fn("\nEnter model type number: ").strip()
+                    type_idx = int(type_selection) - 1
+                    if 0 <= type_idx < len(model_types):
+                        selected_model.model_type = model_types[type_idx]
+                        output_fn(f"Model type set to: {selected_model.model_type.value}\n")
+                        break
+                    else:
+                        output_fn(f"Invalid selection. Please enter a number between 1 and {len(model_types)}.\n")
+                except ValueError:
+                    output_fn("Invalid input. Please enter a number.\n")
+                except KeyboardInterrupt:
+                    output_fn("\nCancelled.\n")
+                    return None
+        
         # Step 2: Select Dataset
         output_fn("\n" + "-" * 60 + "\n")
         output_fn("Step 2: Select a Dataset\n")
@@ -662,7 +685,7 @@ def execute_training(
     Execute training for a session.
     
     Sets session status to TRAINING, sends training commands to all participating nodes,
-    tracks training progress, and optionally transfers trained models back to caller.
+    tracks training progress, and collects training statistics.
     
     Args:
         session_id: ID of the session to train
@@ -927,49 +950,52 @@ def execute_training(
     # Update session to persist stats
     _session_manager.update_session(session_id, data_distribution_state=session.data_distribution_state)
     
-    # Ask if user wants to transfer models back
-    if session.status == SessionStatus.COMPLETE:
-        transfer_models = _input_fn("\nTransfer all trained model segments back to this node for local storage? (yes/no): ").strip().lower()
-        if transfer_models in ['yes', 'y']:
-            output_fn("\nTransferring models...\n")
-            _transfer_trained_models_back(session, output_fn)
-        else:
-            output_fn("Model transfer skipped.\n")
+    # Model transfer functionality is not yet implemented
+    # TODO: Implement model transfer back to caller node
+    # if session.status == SessionStatus.COMPLETE:
+    #     transfer_models = _input_fn("\nTransfer all trained model segments back to this node for local storage? (yes/no): ").strip().lower()
+    #     if transfer_models in ['yes', 'y']:
+    #         output_fn("\nTransferring models...\n")
+    #         _transfer_trained_models_back(session, output_fn)
+    #     else:
+    #         output_fn("Model transfer skipped.\n")
     
     return session
 
 
-def _transfer_trained_models_back(session: Session, output_fn: Callable[[str], None]) -> None:
-    """
-    Transfer all trained model segments back to the caller node for local storage.
-    
-    Args:
-        session: Session object
-        output_fn: Function to call with output text
-    """
-    if _beacon is None or _config is None:
-        output_fn("Error: System not fully initialized\n")
-        return
-    
-    # Get all nodes that completed training
-    completed_nodes = [
-        (node_key, node_status)
-        for node_key, node_status in session.data_distribution_state.get("training_nodes", {}).items()
-        if node_status.get("status") == "complete"
-    ]
-    
-    if not completed_nodes:
-        output_fn("No completed training nodes to transfer models from.\n")
-        return
-    
-    output_fn(f"Transferring models from {len(completed_nodes)} node(s)...\n")
-    
-    # For each node, request the trained model
-    # This would require implementing a "get_trained_model" command
-    # For now, we'll just log that this needs to be implemented
-    output_fn("Note: Model transfer functionality needs to be implemented.\n")
-    output_fn("Trained models remain on remote nodes.\n")
-    logger.warning("Model transfer back to caller not yet implemented")
+# Model transfer functionality is not yet implemented
+# TODO: Implement model transfer back to caller node
+# def _transfer_trained_models_back(session: Session, output_fn: Callable[[str], None]) -> None:
+#     """
+#     Transfer all trained model segments back to the caller node for local storage.
+#     
+#     Args:
+#         session: Session object
+#         output_fn: Function to call with output text
+#     """
+#     if _beacon is None or _config is None:
+#         output_fn("Error: System not fully initialized\n")
+#         return
+#     
+#     # Get all nodes that completed training
+#     completed_nodes = [
+#         (node_key, node_status)
+#         for node_key, node_status in session.data_distribution_state.get("training_nodes", {}).items()
+#         if node_status.get("status") == "complete"
+#     ]
+#     
+#     if not completed_nodes:
+#         output_fn("No completed training nodes to transfer models from.\n")
+#         return
+#     
+#     output_fn(f"Transferring models from {len(completed_nodes)} node(s)...\n")
+#     
+#     # For each node, request the trained model
+#     # This would require implementing a "get_trained_model" command
+#     # For now, we'll just log that this needs to be implemented
+#     output_fn("Note: Model transfer functionality needs to be implemented.\n")
+#     output_fn("Trained models remain on remote nodes.\n")
+#     logger.warning("Model transfer back to caller not yet implemented")
 
 
 def execute_train_session(output_fn: Callable[[str], None], session_id: Optional[str] = None) -> None:
@@ -1354,7 +1380,7 @@ def execute_infer(output_fn: Callable[[str], None], input_data: Optional[str] = 
     _session_manager.update_session(_current_session_id, status=SessionStatus.INFERRING)
     
     output_fn("\n" + "=" * 60 + "\n")
-    output_fn("Running Federated Inference\n")
+    output_fn("Running Inference\n")
     output_fn("=" * 60 + "\n\n")
     
     start_time = time.time()
@@ -1390,11 +1416,89 @@ def execute_infer(output_fn: Callable[[str], None], input_data: Optional[str] = 
                         "node_key": node_key,
                     })
     
+    # Prepare input data locally before sending to remote nodes
+    # This ensures remote nodes receive pre-processed data they can use directly
+    import numpy as np
+    from pathlib import Path
+    import io
+    import onnx
+    
+    # Load ONNX model to get input shape (with lazy loading)
+    prepared_input_data = None
+    try:
+        from mosaic_planner.model_planner import _load_onnx_model
+        import onnxruntime as ort
+        
+        model = session.model
+        if model:
+            # Lazy load: if binary_rep is None, load from file and cache it
+            if model.binary_rep is None:
+                if model.onnx_location is None or model.file_name is None:
+                    output_fn("✗ Error: Model file information not available\n")
+                    session.status = SessionStatus.ERROR
+                    _session_manager.update_session(_current_session_id, status=SessionStatus.ERROR)
+                    return
+                
+                # Load model from file
+                models_base = Path(_config.models_location)
+                if model.onnx_location:
+                    model_path = models_base / model.onnx_location / model.file_name
+                else:
+                    model_path = models_base / model.file_name
+                
+                if not model_path.exists():
+                    output_fn(f"✗ Error: Model file not found: {model_path}\n")
+                    session.status = SessionStatus.ERROR
+                    _session_manager.update_session(_current_session_id, status=SessionStatus.ERROR)
+                    return
+                
+                # Read file and store in binary_rep for future use
+                with open(model_path, 'rb') as f:
+                    model.binary_rep = f.read()
+                
+                logger.debug(f"Lazy loaded model {model.name} into binary_rep")
+            
+            # Now load the model (will use cached binary_rep if available)
+            onnx_model = _load_onnx_model(model, _config)
+            model_bytes = onnx_model.SerializeToString()
+            session_ort = ort.InferenceSession(model_bytes, providers=['CPUExecutionProvider'])
+            input_shape = session_ort.get_inputs()[0].shape
+            
+            # Prepare input data (load from file and preprocess)
+            prepared_input_data = _parse_inference_input(input_data, input_shape, session, output_fn)
+            
+            if prepared_input_data is None:
+                output_fn("✗ Failed to prepare input data for inference\n")
+                session.status = SessionStatus.ERROR
+                _session_manager.update_session(_current_session_id, status=SessionStatus.ERROR)
+                return
+            
+            # Convert to list for JSON serialization
+            prepared_input_data = prepared_input_data.tolist()
+    except ImportError as e:
+        if 'onnxruntime' in str(e):
+            output_fn("✗ Error: onnxruntime not installed. Install with: pip install onnxruntime\n")
+        else:
+            output_fn(f"✗ Error preparing input data: {e}\n")
+        logger.error(f"Error preparing input data: {e}", exc_info=True)
+        session.status = SessionStatus.ERROR
+        _session_manager.update_session(_current_session_id, status=SessionStatus.ERROR)
+        return
+    except Exception as e:
+        output_fn(f"✗ Error preparing input data: {e}\n")
+        logger.error(f"Error preparing input data: {e}", exc_info=True)
+        session.status = SessionStatus.ERROR
+        _session_manager.update_session(_current_session_id, status=SessionStatus.ERROR)
+        return
+    
     if not inference_nodes:
         output_fn("Warning: No nodes found in distribution plan. Running inference locally only.\n")
-        # Run inference locally
+        # Run inference locally with pre-processed data
         try:
-            result = _run_local_inference(session, input_data, output_fn)
+            # Convert back to numpy array for local inference
+            import numpy as np
+            input_array = np.array(prepared_input_data, dtype=np.float32)
+            result = _run_local_inference(session, input_array, output_fn)
             if result is not None:
                 _handle_inference_result(result, session, output_fn, start_time, 1, [])
             else:
@@ -1430,7 +1534,7 @@ def execute_infer(output_fn: Callable[[str], None], input_data: Optional[str] = 
                 command="run_inference",
                 payload={
                     "session_id": _current_session_id,
-                    "input_data": input_data,
+                    "input_data": prepared_input_data,  # Send pre-processed data
                 },
                 timeout=60.0,  # Timeout for inference
             )
@@ -1503,7 +1607,7 @@ def execute_infer(output_fn: Callable[[str], None], input_data: Optional[str] = 
 
 def _run_local_inference(
     session: Session,
-    input_data: str,
+    input_data: Union[str, list, Any],  # Can be file path string or pre-processed array/list
     output_fn: Callable[[str], None],
 ) -> Optional[Any]:
     """
@@ -1511,7 +1615,9 @@ def _run_local_inference(
     
     Args:
         session: Session instance
-        input_data: Input data string (file path or data)
+        input_data: Input data - can be:
+            - str: File path to load
+            - list/np.ndarray: Pre-processed data ready for inference
         output_fn: Function to call with output text
         
     Returns:
@@ -1529,7 +1635,30 @@ def _run_local_inference(
             output_fn("Error: No model found in session\n")
             return None
         
-        # Load ONNX model
+        # Lazy load: if binary_rep is None, load from file and cache it
+        if model.binary_rep is None:
+            if model.onnx_location is None or model.file_name is None:
+                output_fn("Error: Model file information not available\n")
+                return None
+            
+            # Load model from file
+            models_base = Path(_config.models_location)
+            if model.onnx_location:
+                model_path = models_base / model.onnx_location / model.file_name
+            else:
+                model_path = models_base / model.file_name
+            
+            if not model_path.exists():
+                output_fn(f"Error: Model file not found: {model_path}\n")
+                return None
+            
+            # Read file and store in binary_rep for future use
+            with open(model_path, 'rb') as f:
+                model.binary_rep = f.read()
+            
+            logger.debug(f"Lazy loaded model {model.name} into binary_rep")
+        
+        # Load ONNX model (will use cached binary_rep if available)
         onnx_model = _load_onnx_model(model, _config)
         
         # Create ONNX Runtime inference session
@@ -1540,7 +1669,7 @@ def _run_local_inference(
         input_name = session_ort.get_inputs()[0].name
         input_shape = session_ort.get_inputs()[0].shape
         
-        # Parse input data
+        # Parse input data (handles both file paths and pre-processed data)
         input_tensor = _parse_inference_input(input_data, input_shape, session, output_fn)
         if input_tensor is None:
             return None
@@ -1561,16 +1690,18 @@ def _run_local_inference(
 
 
 def _parse_inference_input(
-    input_data: str,
+    input_data: Union[str, list, Any],  # Can be file path string or pre-processed array/list
     input_shape: List[Any],
     session: Session,
     output_fn: Callable[[str], None],
-) -> Optional[Any]:
+) -> Optional[Any]:  # Returns numpy array
     """
     Parse inference input data into a numpy array.
     
     Args:
-        input_data: Input data string (file path or data)
+        input_data: Input data - can be:
+            - str: File path to load
+            - list/np.ndarray: Pre-processed data ready for inference
         input_shape: Expected input shape
         session: Session instance
         output_fn: Function to call with output text
@@ -1581,51 +1712,195 @@ def _parse_inference_input(
     import numpy as np
     from pathlib import Path
     
-    # Check if it's a file path
+    # If input_data is already a numpy array or list, convert and return it
+    if isinstance(input_data, (list, np.ndarray)):
+        try:
+            if isinstance(input_data, list):
+                input_array = np.array(input_data, dtype=np.float32)
+            else:
+                input_array = np.asarray(input_data, dtype=np.float32)
+            
+            # Ensure correct shape (add batch dimension if needed)
+            if len(input_array.shape) < len(input_shape):
+                # Add batch dimension if missing
+                input_array = np.expand_dims(input_array, axis=0)
+            
+            return input_array
+        except Exception as e:
+            output_fn(f"Error converting input data to array: {e}\n")
+            return None
+    
+    # Otherwise, treat as file path string
+    if not isinstance(input_data, str):
+        output_fn(f"Error: Unsupported input data type: {type(input_data)}\n")
+        return None
+    
     input_path = Path(input_data)
-    if input_path.exists() and input_path.is_file():
-        # Load from file based on data type
-        if session.data and session.data.file_definitions:
-            data_type = session.data.file_definitions[0].data_type
-            # For now, use a simple approach - load as image/audio/text based on extension
-            # In a full implementation, this would use proper loaders
-            try:
-                if data_type == DataType.IMAGE:
-                    from PIL import Image
-                    img = Image.open(input_path)
-                    img = img.convert('RGB')
-                    # Resize if needed (simplified)
-                    import torchvision.transforms as transforms
-                    transform = transforms.Compose([
-                        transforms.Resize((224, 224)),
-                        transforms.ToTensor(),
-                    ])
-                    tensor = transform(img)
-                    return tensor.numpy()
-                elif data_type == DataType.AUDIO:
-                    # Would use librosa or similar
-                    output_fn("Error: Audio file loading not yet implemented\n")
-                    return None
-                elif data_type == DataType.TEXT:
-                    with open(input_path, 'r', encoding='utf-8') as f:
-                        text = f.read()
-                    # Would tokenize here
-                    output_fn("Error: Text file loading not yet fully implemented\n")
-                    return None
-                else:
-                    output_fn(f"Error: File loading for {data_type} not yet implemented\n")
-                    return None
-            except Exception as e:
-                output_fn(f"Error loading file: {e}\n")
+    if not input_path.exists():
+        output_fn(f"Error: Input file not found: {input_path}\n")
+        return None
+    
+    if not input_path.is_file():
+        output_fn(f"Error: Input path is not a file: {input_path}\n")
+        return None
+    
+    # Load from file based on data type
+    if not session.data or not session.data.file_definitions:
+        output_fn("Error: Cannot determine data type for file input\n")
+        return None
+    
+    data_type = session.data.file_definitions[0].data_type
+    
+    try:
+        if data_type == DataType.IMAGE:
+            return _load_image_for_inference(input_path, input_shape, output_fn)
+        elif data_type == DataType.AUDIO:
+            return _load_audio_for_inference(input_path, input_shape, session, output_fn)
+        elif data_type == DataType.TEXT:
+            return _load_text_for_inference(input_path, input_shape, session, output_fn)
+        elif data_type == DataType.DIR:
+            # For DIR, process first file in directory
+            files = list(input_path.glob("*"))
+            if files:
+                # Recursively call with first file
+                return _parse_inference_input(str(files[0]), input_shape, session, output_fn)
+            else:
+                output_fn("Error: Directory is empty\n")
                 return None
         else:
-            output_fn("Error: Cannot determine data type for file input\n")
+            output_fn(f"Error: File loading for {data_type} not yet implemented\n")
             return None
-    else:
-        # Try to parse as array/data
-        # For now, return a dummy input based on shape
-        # In a full implementation, this would parse the input string properly
-        output_fn("Error: Direct data input parsing not yet fully implemented. Please provide a file path.\n")
+    except Exception as e:
+        output_fn(f"Error loading file: {e}\n")
+        logger.error(f"Error loading file for inference: {e}", exc_info=True)
+        return None
+
+
+def _load_image_for_inference(
+    input_path: Path,
+    input_shape: List[Any],
+    output_fn: Callable[[str], None],
+) -> Optional[Any]:  # Returns numpy array
+    """Load and preprocess image for inference."""
+    try:
+        from PIL import Image
+        import torchvision.transforms as transforms
+        import numpy as np
+        
+        img = Image.open(input_path)
+        img = img.convert('RGB')
+        
+        # Determine target size from input_shape if available
+        # Default to 224x224 for CNN models
+        target_size = (224, 224)
+        if len(input_shape) >= 3:
+            # input_shape is typically [batch, channels, height, width] or [channels, height, width]
+            if len(input_shape) >= 4:
+                target_size = (input_shape[2], input_shape[3])
+            elif len(input_shape) >= 3:
+                target_size = (input_shape[1], input_shape[2])
+        
+        transform = transforms.Compose([
+            transforms.Resize(target_size),
+            transforms.ToTensor(),
+        ])
+        tensor = transform(img)
+        return tensor.numpy().astype(np.float32)
+    except Exception as e:
+        output_fn(f"Error loading image: {e}\n")
+        return None
+
+
+def _load_audio_for_inference(
+    input_path: Path,
+    input_shape: List[Any],
+    session: Session,
+    output_fn: Callable[[str], None],
+) -> Optional[Any]:  # Returns numpy array
+    """Load and preprocess audio for inference."""
+    try:
+        import numpy as np
+        
+        # Try to use soundfile if available
+        try:
+            import soundfile as sf
+            audio_data, sample_rate = sf.read(str(input_path))
+            
+            # Convert to mono if stereo
+            if len(audio_data.shape) > 1:
+                audio_data = np.mean(audio_data, axis=1)
+            
+            # Resample or pad/trim to expected length if needed
+            # Default to 16000 samples (1 second at 16kHz) if shape not specified
+            target_length = 16000
+            if len(input_shape) >= 2:
+                target_length = input_shape[-1] if input_shape[-1] is not None else 16000
+            
+            # Pad or trim to target length
+            if len(audio_data) > target_length:
+                audio_data = audio_data[:target_length]
+            elif len(audio_data) < target_length:
+                audio_data = np.pad(audio_data, (0, target_length - len(audio_data)), mode='constant')
+            
+            # Add batch dimension
+            audio_data = np.expand_dims(audio_data, axis=0)
+            return audio_data.astype(np.float32)
+        except ImportError:
+            output_fn("Error: soundfile not installed. Install with: pip install soundfile\n")
+            return None
+    except Exception as e:
+        output_fn(f"Error loading audio: {e}\n")
+        return None
+
+
+def _load_text_for_inference(
+    input_path: Path,
+    input_shape: List[Any],
+    session: Session,
+    output_fn: Callable[[str], None],
+) -> Optional[Any]:  # Returns numpy array
+    """Load and preprocess text for inference."""
+    try:
+        import numpy as np
+        
+        with open(input_path, 'r', encoding='utf-8') as f:
+            text = f.read()
+        
+        # For now, use simple character-level encoding
+        # In a full implementation, this would use proper tokenization
+        # based on the model type (e.g., BERT tokenizer, GPT tokenizer, etc.)
+        
+        # Get model type to determine tokenization approach
+        model = session.model
+        if model and model.model_type:
+            if model.model_type == ModelType.TRANSFORMER:
+                # For transformer models, use simple tokenization
+                # Default sequence length
+                max_length = 512
+                if len(input_shape) >= 2 and input_shape[1] is not None:
+                    max_length = input_shape[1]
+                
+                # Simple character-level encoding (placeholder)
+                # In production, use proper tokenizer
+                tokens = [ord(c) % 50256 for c in text[:max_length]]  # Limit to vocab size
+                
+                # Pad or trim to max_length
+                if len(tokens) < max_length:
+                    tokens.extend([0] * (max_length - len(tokens)))
+                else:
+                    tokens = tokens[:max_length]
+                
+                # Add batch dimension
+                tokens = np.expand_dims(np.array(tokens, dtype=np.int64), axis=0)
+                return tokens
+            else:
+                output_fn(f"Error: Text preprocessing for {model.model_type} not yet implemented\n")
+                return None
+        else:
+            output_fn("Error: Cannot determine model type for text preprocessing\n")
+            return None
+    except Exception as e:
+        output_fn(f"Error loading text: {e}\n")
         return None
 
 

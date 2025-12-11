@@ -334,8 +334,8 @@ def _create_simple_onnx_model() -> onnx.ModelProto:
         [output_tensor],
     )
     
-    # Create model
-    model = helper.make_model(graph, producer_name="test")
+    # Create model with IR version 11 for compatibility with ONNX Runtime
+    model = helper.make_model(graph, producer_name="test", ir_version=11)
     return model
 
 

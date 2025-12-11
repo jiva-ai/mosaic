@@ -9,6 +9,33 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 
+def _ensure_onnx_no_external_data(onnx_path: Path) -> None:
+    """
+    Ensure ONNX model has all data embedded (no external .data files).
+    
+    This is necessary because torch.onnx.export can create external data files for large models,
+    which causes issues when loading from binary_rep (bytes) instead of file paths.
+    
+    Also ensures IR version is compatible with ONNX Runtime (max supported is 11).
+    
+    Args:
+        onnx_path: Path to the ONNX model file
+    """
+    # Load and re-save the model to ensure all data is embedded
+    onnx_model = onnx.load(str(onnx_path))
+    
+    # Ensure IR version is compatible with ONNX Runtime (max supported is 11)
+    if onnx_model.ir_version > 11:
+        onnx_model.ir_version = 11
+    
+    onnx.save(onnx_model, str(onnx_path))
+    
+    # Clean up any external data files that might have been created
+    data_file = onnx_path.with_suffix(onnx_path.suffix + '.data')
+    if data_file.exists():
+        data_file.unlink()
+
+
 def create_resnet50_onnx(output_dir: Union[str, Path]) -> str:
     """
     Create a ResNet-50 model and convert it to ONNX format.
@@ -50,9 +77,8 @@ def create_resnet50_onnx(output_dir: Union[str, Path]) -> str:
             dynamic_axes={"input": {0: "batch_size"}, "output": {0: "batch_size"}},
         )
         
-        # Load and validate the ONNX model
-        #onnx_model = onnx.load(str(onnx_path))
-        #onnx.checker.check_model(onnx_model)
+        # Ensure all data is embedded (no external .data files)
+        _ensure_onnx_no_external_data(onnx_path)
         
         return filename
     except Exception as e:
@@ -103,9 +129,8 @@ def create_resnet101_onnx(output_dir: Union[str, Path]) -> str:
             dynamic_axes={"input": {0: "batch_size"}, "output": {0: "batch_size"}},
         )
         
-        # Load and validate the ONNX model
-        #onnx_model = onnx.load(str(onnx_path))
-        #onnx.checker.check_model(onnx_model)
+        # Ensure all data is embedded (no external .data files)
+        _ensure_onnx_no_external_data(onnx_path)
         
         return filename
     except Exception as e:
@@ -157,9 +182,8 @@ def create_wav2vec2_onnx(output_dir: Union[str, Path]) -> str:
             },
         )
         
-        # Load and validate the ONNX model
-        #onnx_model = onnx.load(str(onnx_path))
-        #onnx.checker.check_model(onnx_model)
+        # Ensure all data is embedded (no external .data files)
+        _ensure_onnx_no_external_data(onnx_path)
         
         return filename
     except Exception as e:
@@ -228,9 +252,8 @@ def create_gpt_neo_onnx(output_dir: Union[str, Path]) -> str:
             },
         )
         
-        # Load and validate the ONNX model
-        #onnx_model = onnx.load(str(onnx_path))
-        #onnx.checker.check_model(onnx_model)
+        # Ensure all data is embedded (no external .data files)
+        _ensure_onnx_no_external_data(onnx_path)
         
         return filename
     except Exception as e:
@@ -315,9 +338,8 @@ def create_gcn_onnx(output_dir: Union[str, Path]) -> str:
             },
         )
         
-        # Load and validate the ONNX model
-        #onnx_model = onnx.load(str(onnx_path))
-        #onnx.checker.check_model(onnx_model)
+        # Ensure all data is embedded (no external .data files)
+        _ensure_onnx_no_external_data(onnx_path)
         
         return filename
     except Exception as e:
@@ -430,9 +452,8 @@ def create_biggan_onnx(output_dir: Union[str, Path]) -> str:
             },
         )
         
-        # Load and validate the ONNX model
-        #onnx_model = onnx.load(str(onnx_path))
-        #onnx.checker.check_model(onnx_model)
+        # Ensure all data is embedded (no external .data files)
+        _ensure_onnx_no_external_data(onnx_path)
         
         return filename
     except Exception as e:
@@ -512,9 +533,8 @@ def create_ppo_onnx(output_dir: Union[str, Path]) -> str:
             },
         )
         
-        # Load and validate the ONNX model
-        #onnx_model = onnx.load(str(onnx_path))
-        #onnx.checker.check_model(onnx_model)
+        # Ensure all data is embedded (no external .data files)
+        _ensure_onnx_no_external_data(onnx_path)
         
         return filename
     except Exception as e:

@@ -44,7 +44,10 @@ def _load_onnx_model(model: Model, config: Optional[MosaicConfig] = None) -> onn
         config = read_config()
     
     models_base = Path(config.models_location)
-    model_path = models_base / model.onnx_location / model.file_name
+    if model.onnx_location:
+        model_path = models_base / model.onnx_location / model.file_name
+    else:
+        model_path = models_base / model.file_name
     
     if not model_path.exists():
         raise ValueError(f"Model file not found: {model_path}")

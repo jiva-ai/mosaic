@@ -8,6 +8,7 @@ dependencies = [
     "psutil>=5.9.0",
     "stream-unzip>=0.0.60",
     "onnx>=1.15.0",
+    "onnxruntime>=1.16.0",
     "onnxscript>=0.1.0",
     "torch>=2.0.0",
     "torchvision>=0.15.0",
@@ -53,5 +54,9 @@ filterwarnings = [
     # The current code works fine with dynamic_axes, and switching to dynamic_shapes
     # would require more extensive testing
     "ignore::UserWarning:mosaic_model_runtime.predefined_models",
+    "ignore::UserWarning:mosaic_planner.model_execution",
+    # Suppress lr_scheduler.step() warning - for StepLR, calling scheduler.step() 
+    # at the end of each epoch (after all optimizer.step() calls) is the correct pattern
+    "ignore::UserWarning:torch.optim.lr_scheduler",
 ]
 
