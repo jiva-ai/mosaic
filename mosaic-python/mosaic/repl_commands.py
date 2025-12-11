@@ -287,6 +287,156 @@ def execute_ls(output_fn: Callable[[str], None], parameter: Optional[str] = None
         output_fn("Parameters: sessions, models, data\n")
 
 
+def execute_quickstart(output_fn: Callable[[str], None]) -> None:
+    """
+    Execute quickstart command - show getting started guide.
+    
+    Args:
+        output_fn: Function to call with output text
+    """
+    guide = """MOSAIC - Quick Start Guide
+================================================================================
+
+Welcome to MOSAIC! This guide will walk you through the basic workflow of
+creating a session, training a model, and running inference.
+
+WORKFLOW OVERVIEW
+================================================================================
+
+The typical MOSAIC workflow consists of three main steps:
+
+1. CREATE A SESSION
+   - Sets up a container for your model and data
+   - Distributes data and model shards across available nodes
+   - Prepares the system for training
+
+2. TRAIN THE MODEL
+   - Trains the model using distributed data shards
+   - Each node trains on its assigned data portion
+   - Training statistics are collected and displayed
+
+3. RUN INFERENCE
+   - Uses the trained model to make predictions
+   - Aggregates results from all participating nodes
+   - Supports various aggregation methods (FedAvg, Majority Vote, etc.)
+
+STEP-BY-STEP COMMANDS
+================================================================================
+
+Step 1: Create a Session
+-------------------------
+Command: create_session
+
+This interactive command will guide you through:
+  • Selecting a model (from disk or predefined models)
+  • Choosing a dataset (searches your data directory)
+  • Reviewing the distribution plan
+  • Confirming data and model distribution
+
+Example:
+  mosaic> create_session
+
+After creation, you'll be asked if you want to train immediately.
+Answer 'yes' to proceed to training, or 'no' to train later.
+
+Step 2: Train the Model
+------------------------
+Command: train_session [session_id]
+
+If you didn't train during session creation, use this command to start training.
+You can specify a session ID, or the system will prompt you to select one.
+
+Example:
+  mosaic> train_session
+  mosaic> train_session abc-123-def-456
+
+Training runs asynchronously across all nodes. You'll see status updates
+as each node reports progress. Training statistics are displayed at completion.
+
+Step 3: Run Inference
+----------------------
+Commands: use [session_id]
+          infer [input_file]
+
+First, set the active session for inference:
+  mosaic> use
+  mosaic> use abc-123-def-456
+
+Then run inference on your data:
+  mosaic> infer /path/to/image.jpg
+  mosaic> infer /path/to/audio.wav
+  mosaic> infer /path/to/text.txt
+
+The system will:
+  • Preprocess your input based on the model type
+  • Send inference requests to all participating nodes
+  • Aggregate predictions using the configured method
+  • Display or save results
+
+USEFUL COMMANDS
+================================================================================
+
+List Resources:
+  ls sessions    - List all sessions
+  ls models      - List all models
+  ls data        - List data files
+
+Session Management:
+  delete_session [id]  - Delete a session
+  cancel_training [id]  - Cancel ongoing training
+
+Inference Configuration:
+  set_infer_method [method]  - Set aggregation method (fedavg, majority_vote, etc.)
+
+Help:
+  help              - List all commands
+  help <command>    - Detailed help for a specific command
+  quickstart        - Show this guide again
+
+EXAMPLES
+================================================================================
+
+Complete workflow example:
+
+  mosaic> create_session
+  [Interactive session creation...]
+  Train model now? (yes/no): yes
+  [Training starts...]
+
+  mosaic> use
+  [Select session for inference]
+  mosaic> infer /path/to/test_image.jpg
+  [Inference results displayed]
+
+Viewing resources:
+
+  mosaic> ls sessions
+  mosaic> ls models
+  mosaic> ls data
+
+Getting help:
+
+  mosaic> help create_session
+  mosaic> help train_session
+  mosaic> help infer
+
+ADDITIONAL RESOURCES
+================================================================================
+
+For more detailed documentation, examples, and advanced features, visit:
+  https://github.com/jiva-ai/mosaic
+
+The repository includes:
+  • Complete API documentation
+  • Configuration guides
+  • Advanced usage examples
+  • Troubleshooting tips
+
+================================================================================
+"""
+    output_fn(guide)
+
+
 def execute_help(output_fn: Callable[[str], None], command: Optional[str] = None) -> None:
     """
     Execute help command - show help message or detailed command help.
@@ -390,6 +540,8 @@ def process_command(command: str, output_fn: Callable[[str], None]) -> None:
         elif cmd == "help":
             help_command = args[0] if args else None
             execute_help(output_fn, help_command)
+        elif cmd == "quickstart":
+            execute_quickstart(output_fn)
         else:
             output_fn("Unknown command. Type 'help' for available commands.\n")
     except Exception as e:

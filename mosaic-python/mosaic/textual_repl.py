@@ -5,14 +5,7 @@ from textual.containers import ScrollableContainer
 from textual.widgets import Footer, Header, Input, Static
 from textual.binding import Binding
 
-from mosaic.repl_commands import (
-    execute_calcd,
-    execute_hb,
-    execute_help,
-    execute_rhb,
-    execute_shb,
-    process_command,
-)
+from mosaic.repl_commands import process_command
 
 
 class MosaicREPL(App):
@@ -72,7 +65,26 @@ class MosaicREPL(App):
         self.title = "Mosaic Orchestrator REPL"
         self.sub_title = "Type 'help' for available commands"
         self.query_one("#input", Input).focus()
-        self._append_output("Mosaic Orchestrator REPL\nType 'help' for available commands\n")
+        startup_msg = """╔══════════════════════════════════════════════════════════════════════════╗
+║                    MOSAIC Orchestrator REPL                          ║
+╚══════════════════════════════════════════════════════════════════════════╝
+
+Welcome! Here's how to get started:
+
+  • Type 'help' to see all available commands
+  • Type 'quickstart' for a step-by-step getting started guide
+  • Visit https://github.com/jiva-ai/mosaic for full documentation
+
+Quick workflow:
+  1. create_session  - Set up a session with model and data
+  2. train_session   - Train your model (or train during session creation)
+  3. use             - Set active session for inference
+  4. infer           - Run inference on your data
+
+Type 'quickstart' for detailed instructions.
+
+"""
+        self._append_output(startup_msg)
 
     def on_input_submitted(self, event: Input.Submitted) -> None:
         """Handle command input."""

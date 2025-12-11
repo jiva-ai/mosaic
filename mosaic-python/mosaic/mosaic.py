@@ -419,6 +419,21 @@ def repl_loop() -> None:
     """
     Start the REPL loop.
     """
+    # Print startup message
+    print("\n" + "=" * 70)
+    print("                    MOSAIC Orchestrator REPL")
+    print("=" * 70)
+    print("\nWelcome! Here's how to get started:\n")
+    print("  • Type 'help' to see all available commands")
+    print("  • Type 'quickstart' for a step-by-step getting started guide")
+    print("  • Visit https://github.com/jiva-ai/mosaic for full documentation\n")
+    print("Quick workflow:")
+    print("  1. create_session  - Set up a session with model and data")
+    print("  2. train_session   - Train your model (or train during session creation)")
+    print("  3. use             - Set active session for inference")
+    print("  4. infer           - Run inference on your data\n")
+    print("Type 'quickstart' for detailed instructions.\n")
+    
     while True:
         try:
             command = input("mosaic> ").strip()

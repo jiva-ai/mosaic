@@ -343,6 +343,48 @@ SEE ALSO
     create_session, delete_session, use
 """,
     ),
+    "quickstart": (
+        "Show getting started guide for MOSAIC",
+        """QUICKSTART - Getting Started Guide
+
+SYNOPSIS
+    quickstart
+
+DESCRIPTION
+    Displays a comprehensive getting started guide that walks you through the
+    basic MOSAIC workflow. This guide is perfect for new users who want to
+    understand how to use MOSAIC for federated machine learning.
+
+    The guide covers:
+    - Overview of the MOSAIC workflow (create session, train, infer)
+    - Step-by-step instructions for each major command
+    - Common use cases and examples
+    - Links to additional resources
+
+WORKFLOW OVERVIEW
+    The typical MOSAIC workflow consists of three main steps:
+
+    1. CREATE A SESSION
+       Sets up a container for your model and data, distributes data and model
+       shards across available nodes, and prepares the system for training.
+
+    2. TRAIN THE MODEL
+       Trains the model using distributed data shards. Each node trains on its
+       assigned data portion, and training statistics are collected.
+
+    3. RUN INFERENCE
+       Uses the trained model to make predictions, aggregates results from all
+       participating nodes using various aggregation methods.
+
+EXAMPLES
+    quickstart
+        Display the complete getting started guide
+
+SEE ALSO
+    create_session, train_session, infer, help
+    https://github.com/jiva-ai/mosaic
+""",
+    ),
     "rhb": (
         "Show receive heartbeat statuses",
         """RHB - Show Receive Heartbeat Statuses
