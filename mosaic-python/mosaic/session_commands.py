@@ -446,6 +446,21 @@ def _create_session_simple(output_fn: Callable[[str], None]) -> Optional[Session
         
         if not distribution_plan:
             output_fn("Error: Could not create distribution plan.\n")
+            # Provide more detailed error information
+            from mosaic_planner.planner import eligibility_filter
+            eligible_peers = eligibility_filter(stats_data, stale_threshold=60)
+            if not eligible_peers:
+                output_fn("  Reason: No eligible peers found (peers must be online and not stale).\n")
+                output_fn("  Tip: Ensure peers are connected and have sent recent heartbeats.\n")
+            else:
+                # Check for benchmark data
+                peers_with_benchmark = [p for p in eligible_peers if isinstance(p.get("benchmark"), dict) and p.get("benchmark")]
+                if not peers_with_benchmark:
+                    output_fn("  Reason: No peers have benchmark data.\n")
+                    output_fn("  Tip: Run 'benchmark' command on peers to collect performance data.\n")
+                else:
+                    output_fn("  Reason: No peers with positive capacity or effective scores.\n")
+                    output_fn("  Tip: Ensure peers have valid benchmark data with non-zero values.\n")
             return None
         
         # Create project for data planning
