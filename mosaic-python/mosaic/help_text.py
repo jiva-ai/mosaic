@@ -536,6 +536,194 @@ OPTIONS
         Optional session ID to train. If not provided, you will be prompted
         to select from available sessions.
 
+DATA DIRECTORY STRUCTURE
+    The data directory (as defined in your config) should be organized based on
+    the model type and data type you're using. Below are the recommended
+    structures for common combinations:
+
+    IMAGE DATA (CNN, VIT, VAE, DIFFUSION models):
+    ---------------------------------------------
+    Directory structure:
+        data/
+        └── your_dataset/
+            ├── image1.jpg
+            ├── image2.png
+            ├── image3.jpg
+            └── ...
+    
+    Supported formats: .jpg, .jpeg, .png
+    - Can be a single directory containing all images
+    - Images are automatically loaded and preprocessed
+    - For classification: labels typically inferred from directory structure
+      or provided separately
+    
+    Example:
+        data/
+        └── cats_and_dogs/
+            ├── cat_001.jpg
+            ├── cat_002.jpg
+            ├── dog_001.jpg
+            └── dog_002.jpg
+
+    AUDIO DATA (WAV2VEC models):
+    -----------------------------
+    Directory structure:
+        data/
+        └── your_dataset/
+            ├── audio1.wav
+            ├── audio2.flac
+            ├── audio3.wav
+            └── ...
+    
+    Supported formats: .wav, .flac
+    - Can be a single directory containing all audio files
+    - Audio files are loaded and resampled to expected sample rate
+    - For speech recognition: transcriptions typically in separate .txt files
+      or embedded in filenames
+    
+    Example:
+        data/
+        └── speech_data/
+            ├── sample_001.wav
+            ├── sample_002.flac
+            └── transcriptions.txt  (optional, separate file)
+
+    TEXT DATA (TRANSFORMER, BERT, RNN, LSTM models):
+    ------------------------------------------------
+    Directory structure:
+        data/
+        └── your_dataset/
+            ├── text1.txt
+            ├── text2.txt
+            ├── text3.jsonl
+            └── ...
+    
+    Supported formats: .txt, .jsonl
+    - Can be a single directory containing text files
+    - Each file can contain one or multiple samples
+    - For .jsonl: each line is a JSON object with text data
+    - Text is tokenized based on model requirements
+    
+    Example (single file):
+        data/
+        └── corpus.txt  (one large text file)
+    
+    Example (multiple files):
+        data/
+        └── documents/
+            ├── doc1.txt
+            ├── doc2.txt
+            └── doc3.txt
+    
+    Example (JSONL):
+        data/
+        └── dataset.jsonl
+            {"text": "First sample text..."}
+            {"text": "Second sample text..."}
+
+    GRAPH DATA (GNN models):
+    ------------------------
+    Directory structure:
+        data/
+        └── your_dataset/
+            ├── graph1.json
+            ├── graph2.json
+            └── ...
+    
+    Supported formats: .json, .graphml, .pkl
+    - Each file represents a graph with nodes, edges, and features
+    - JSON format should contain:
+      {
+        "nodes": [...],
+        "edges": [...],
+        "features": [...],
+        "labels": [...]  (optional)
+      }
+    
+    Example:
+        data/
+        └── graphs/
+            ├── graph_001.json
+            └── graph_002.json
+
+    CSV DATA (CNN, TRANSFORMER models):
+    ------------------------------------
+    Directory structure:
+        data/
+        └── your_dataset.csv
+    
+    Supported formats: .csv
+    - Single CSV file with features and optional target column
+    - First row typically contains column headers
+    - Target column should be specified during session creation
+    
+    Example:
+        data/
+        └── tabular_data.csv
+            feature1,feature2,feature3,target
+            1.0,2.0,3.0,0
+            4.0,5.0,6.0,1
+
+    RL DATA (RL models):
+    --------------------
+    Directory structure:
+        data/
+        └── your_dataset/
+            ├── trajectory1.json
+            ├── trajectory2.json
+            └── ...
+    
+    Supported formats: .json
+    - Each file contains trajectory data (observations, actions, rewards)
+    - Format should include:
+      {
+        "observations": [...],
+        "actions": [...],
+        "rewards": [...],
+        "dones": [...]  (optional)
+      }
+    
+    Example:
+        data/
+        └── rl_trajectories/
+            ├── traj_001.json
+            └── traj_002.json
+
+    DIRECTORY (DIR data type):
+    ---------------------------
+    Directory structure:
+        data/
+        └── your_dataset/
+            └── subdirectory/
+                ├── file1.ext
+                ├── file2.ext
+                └── ...
+    
+    - Points to a directory containing mixed or organized data
+    - System will discover and process files based on extensions
+    - Useful for datasets with nested organization
+    
+    Example:
+        data/
+        └── mixed_dataset/
+            ├── images/
+            │   ├── img1.jpg
+            │   └── img2.png
+            └── metadata/
+                └── labels.csv
+
+GENERAL GUIDELINES
+    - All paths are relative to the data_location configured in your config
+    - Use descriptive directory/file names
+    - Ensure sufficient disk space for your dataset
+    - For large datasets, consider organizing into subdirectories
+    - File extensions must match the expected formats for your data type
+    - Labels/targets can be:
+      * Embedded in directory structure (e.g., class folders)
+      * In separate annotation files
+      * Inferred from filenames
+      * Specified during session creation
+
 EXAMPLES
     train_session
         Train a session (will prompt for session ID)
@@ -544,7 +732,7 @@ EXAMPLES
         Train session_123
 
 SEE ALSO
-    create_session, cancel_training
+    create_session, cancel_training, ls data
 """,
     ),
     "use": (
