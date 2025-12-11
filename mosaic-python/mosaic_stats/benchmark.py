@@ -658,20 +658,64 @@ def save_benchmarks(benchmark_data_location: str, results: Optional[Dict[str, An
     if results is None:
         results = run_benchmarks(benchmark_data_location)
 
-    benchmark_data_path = Path(benchmark_data_location)
+    # Handle path the same way as state_location (strip, remove trailing slash, use as-is)
+    input_path = benchmark_data_location
+    benchmark_location = benchmark_data_location.strip()
+    
+    # Remove trailing slash if present (same as state_location handling)
+    if benchmark_location.endswith("/") or benchmark_location.endswith("\\"):
+        benchmark_location = benchmark_location[:-1]
+    
+    benchmark_data_path = Path(benchmark_location)
+    
+    # Diagnostic information
+    import os
+    cwd = os.getcwd()
+    is_docker = os.path.exists("/.dockerenv") or os.path.exists("/.dockerinit")
+    logger.info(
+        f"save_benchmarks: input path='{input_path}' -> using path: '{benchmark_data_path}' "
+        f"(same pattern as state_location) | CWD: '{cwd}' | In Docker: {is_docker}"
+    )
+    
+    # Create directory if it doesn't exist
     benchmark_data_path.mkdir(parents=True, exist_ok=True)
+    logger.info(
+        f"Ensured benchmark directory exists: '{benchmark_data_path}' (exists: {benchmark_data_path.exists()}, "
+        f"is_dir: {benchmark_data_path.is_dir()}, is_mount: {os.path.ismount(str(benchmark_data_path))})"
+    )
 
     hostname = results.get("host", _get_hostname())
     benchmark_file = benchmark_data_path / f"{hostname}_core_benchmark.json"
+    logger.info(f"Target benchmark file: '{benchmark_file}' (absolute path)")
 
     # Write atomically
     temp_file = benchmark_file.with_suffix(".tmp")
+    logger.debug(f"Writing to temporary file: '{temp_file}'")
     with open(temp_file, "w", encoding="utf-8") as f:
         json.dump(results, f, indent=2)
 
     temp_file.replace(benchmark_file)
-
-    logger.info(f"Benchmark results saved to {benchmark_file}")
+    
+    # Additional diagnostics after writing
+    file_exists = benchmark_file.exists()
+    file_size = benchmark_file.stat().st_size if file_exists else 0
+    file_realpath = os.path.realpath(str(benchmark_file)) if file_exists else "N/A"
+    
+    logger.info(
+        f"Benchmark results saved to: '{benchmark_file}' | "
+        f"Real path: '{file_realpath}' | "
+        f"Exists: {file_exists} | "
+        f"Size: {file_size} bytes | "
+        f"Parent is mount: {os.path.ismount(str(benchmark_file.parent))}"
+    )
+    
+    if is_docker and file_exists:
+        logger.warning(
+            f"Docker environment detected. File written to container path '{benchmark_file}'. "
+            f"Ensure this path is mounted as a volume to persist on the host. "
+            f"Check your docker run command for: -v /host/path:{benchmark_file.parent}"
+        )
+    
     return benchmark_file
 
 
@@ -689,10 +733,23 @@ def benchmarks_captured(benchmark_data_location: str) -> bool:
         return False
 
     try:
-        benchmark_data_path = Path(benchmark_data_location)
+        # Handle path the same way as state_location (strip, remove trailing slash, use as-is)
+        input_path = benchmark_data_location
+        benchmark_location = benchmark_data_location.strip()
+        
+        # Remove trailing slash if present (same as state_location handling)
+        if benchmark_location.endswith("/") or benchmark_location.endswith("\\"):
+            benchmark_location = benchmark_location[:-1]
+        
+        benchmark_data_path = Path(benchmark_location)
         hostname = _get_hostname()
         benchmark_file = benchmark_data_path / f"{hostname}_core_benchmark.json"
-        return benchmark_file.exists()
+        exists = benchmark_file.exists()
+        logger.debug(
+            f"benchmarks_captured: input='{input_path}' -> using path='{benchmark_data_path}' -> "
+            f"checking file='{benchmark_file}' -> exists={exists}"
+        )
+        return exists
     except Exception as e:
         logger.warning(f"Error checking benchmark file: {e}")
         return False

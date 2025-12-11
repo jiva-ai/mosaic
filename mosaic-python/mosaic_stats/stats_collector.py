@@ -110,9 +110,48 @@ class StatsCollector:
 
         self.config = config
         self.heartbeat_report_length = config.heartbeat_report_length
-        self.benchmark_data_location = (
-            Path(config.benchmark_data_location) if config.benchmark_data_location else None
-        )
+        # Handle benchmark_data_location the same way as state_location for consistency
+        import os
+        cwd = os.getcwd()
+        is_docker = os.path.exists("/.dockerenv") or os.path.exists("/.dockerinit")
+        
+        if config.benchmark_data_location:
+            benchmark_location = config.benchmark_data_location.strip()
+            
+            # Remove trailing slash if present (same as state_location handling)
+            if benchmark_location.endswith("/") or benchmark_location.endswith("\\"):
+                benchmark_location = benchmark_location[:-1]
+            
+            if benchmark_location:
+                self.benchmark_data_location = Path(benchmark_location)
+                
+                # Show how state_location is handled for comparison
+                state_location_str = config.state_location.strip()
+                if state_location_str.endswith("/") or state_location_str.endswith("\\"):
+                    state_location_str = state_location_str[:-1]
+                state_location_path = Path(state_location_str) if state_location_str else Path.cwd()
+                
+                logger.info(
+                    f"Config paths - benchmark_data_location: '{config.benchmark_data_location}' -> '{self.benchmark_data_location}' | "
+                    f"state_location: '{config.state_location}' -> '{state_location_path}' | "
+                    f"CWD: '{cwd}' | In Docker: {is_docker}"
+                )
+                logger.info(
+                    f"Path resolution - benchmark_data_location: '{self.benchmark_data_location.resolve()}' | "
+                    f"state_location: '{state_location_path.resolve()}'"
+                )
+                logger.info(
+                    f"Mount check - benchmark_data_location parent: '{self.benchmark_data_location.parent}' "
+                    f"(is_mount: {os.path.ismount(str(self.benchmark_data_location.parent))}) | "
+                    f"state_location parent: '{state_location_path.parent}' "
+                    f"(is_mount: {os.path.ismount(str(state_location_path.parent))})"
+                )
+            else:
+                self.benchmark_data_location = None
+                logger.warning("benchmark_data_location is empty after stripping")
+        else:
+            self.benchmark_data_location = None
+            logger.warning("benchmark_data_location not set in config")
 
         # Rolling window data structure
         self._data_lock = threading.Lock()
@@ -503,18 +542,23 @@ class StatsCollector:
         else:
             # Run benchmarks if run_benchmark_at_startup is True OR benchmarks not captured
             if benchmarks_captured is not None and save_benchmarks is not None:
+                # Ensure run_benchmark_at_startup is a boolean for proper evaluation
+                run_benchmark_flag = bool(self.config.run_benchmark_at_startup)
+                logger.debug(f"run_benchmark_at_startup flag: {run_benchmark_flag} (type: {type(self.config.run_benchmark_at_startup)})")
+                
                 should_run_benchmarks = (
-                    self.config.run_benchmark_at_startup
+                    run_benchmark_flag
                     or not benchmarks_captured(str(self.benchmark_data_location))
                 )
 
+                logger.debug(f"should_run_benchmarks: {should_run_benchmarks}")
                 if should_run_benchmarks:
-                    logger.info("Running startup benchmarks...")
+                    logger.info(f"Running startup benchmarks... (writing to: {self.benchmark_data_location})")
                     try:
-                        save_benchmarks(str(self.benchmark_data_location))
-                        logger.info("Startup benchmarks completed")
+                        saved_path = save_benchmarks(str(self.benchmark_data_location))
+                        logger.info(f"Startup benchmarks completed. File written to: {saved_path} (exists: {saved_path.exists()})")
                     except Exception as e:
-                        logger.error(f"Failed to run startup benchmarks: {e}")
+                        logger.error(f"Failed to run startup benchmarks: {e}", exc_info=True)
             else:
                 logger.warning("Benchmark module not available, skipping startup benchmarks")
 

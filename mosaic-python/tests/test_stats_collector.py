@@ -785,6 +785,45 @@ class TestStartupBenchmarks:
 
             collector.stop()
 
+    def test_start_runs_benchmarks_from_json_config(self, mock_psutil, tmp_path, monkeypatch):
+        """Test that benchmarks run when run_benchmark_at_startup is True in JSON config."""
+        import sys
+        from unittest.mock import patch
+        
+        # Create a JSON config file with run_benchmark_at_startup: true
+        config_file = tmp_path / "test_config.json"
+        config_data = {
+            "heartbeat_report_length": 60,
+            "benchmark_data_location": str(tmp_path / "benchmarks"),
+            "run_benchmark_at_startup": True,  # JSON boolean true
+        }
+        config_file.write_text(json.dumps(config_data), encoding="utf-8")
+        
+        # Load config from JSON file
+        from mosaic_config.config import read_config
+        test_args = ["script.py", "--config", str(config_file)]
+        with patch.object(sys, "argv", test_args):
+            config = read_config()
+            # Verify the config was loaded correctly
+            assert config.run_benchmark_at_startup is True
+            assert isinstance(config.run_benchmark_at_startup, bool)
+        
+        # Now test that benchmarks actually run
+        with patch("mosaic_stats.stats_collector.psutil", mock_psutil), patch(
+            "mosaic_stats.stats_collector.benchmarks_captured", return_value=True
+        ) as mock_captured, patch(
+            "mosaic_stats.stats_collector.save_benchmarks"
+        ) as mock_save:
+            collector = StatsCollector(config)
+            collector.start()
+            
+            # Should run benchmarks because run_benchmark_at_startup is True
+            mock_save.assert_called_once_with(str(tmp_path / "benchmarks"))
+            # benchmarks_captured should NOT be called due to short-circuit
+            mock_captured.assert_not_called()
+            
+            collector.stop()
+
 
 class TestGetCurrentStats:
     """Test cases for get_current_stats method."""

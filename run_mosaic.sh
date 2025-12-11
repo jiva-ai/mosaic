@@ -452,7 +452,7 @@ build_docker_command() {
                         container_path="/app/state"
                         ;;
                     benchmark_data_location)
-                        container_path="/app/benchmark_data"
+                        container_path="/app/benchmarks"
                         ;;
                     *)
                         # Use key name as container path

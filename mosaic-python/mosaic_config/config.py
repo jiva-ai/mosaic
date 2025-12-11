@@ -111,7 +111,7 @@ class MosaicConfig:
             server_key=config_dict.get("server_key", ""),
             ca_crt=config_dict.get("ca_crt", ""),
             benchmark_data_location=config_dict.get("benchmark_data_location", ""),
-            run_benchmark_at_startup=config_dict.get("run_benchmark_at_startup", False),
+            run_benchmark_at_startup=bool(config_dict.get("run_benchmark_at_startup", False)),
             data_location=config_dict.get("data_location", ""),
             plans_location=config_dict.get("plans_location", "plans"),
             models_location=config_dict.get("models_location", "models"),
